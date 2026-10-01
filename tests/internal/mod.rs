@@ -857,3 +857,6 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
         }
     });
 }
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "valkey-conformance"))]
+mod valkey;

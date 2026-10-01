@@ -26,7 +26,7 @@ of anonymous permit correctness, counter-recovery proof or real-Tor delivery.
 
 Open: reviewed anonymous room authorization, counter-resumption and listing
 handover constructions; reader acknowledgements/relay fan-out wiring to Link;
-real Valkey adapter integration and LT-ROOMS. No full room acceptance claimed.
+production Valkey composition and LT-ROOMS. No full room acceptance claimed.
 
 `Action::Read { after }` returns a bounded batch of opaque `RelayFrame`s plus
 `through` and an explicit `gap` when earlier ciphertext has expired. Reads do
@@ -40,3 +40,10 @@ and rejects changed bytes even after intervening writes. Capacity refuses new
 mutations rather than evicting still-valid receipts. Loss of all anonymous
 connections forgets counters, frames and receipts; verified resumption is then
 required. No permanent replay ledger or server-side history is introduced.
+
+
+The required native check also runs `valkey-conformance` against a disposable,
+persistence-disabled Valkey service. The same real-memory/Valkey vector checks
+nonadjacent replay, altered-body refusal and expiry despite interleaved relay.
+Missing service availability fails the check. Its internal permit preconditions
+are not a production anonymous proof or end-to-end room test.

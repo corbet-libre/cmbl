@@ -39,6 +39,15 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      valkey:
+        image: valkey/valkey:latest
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -64,6 +73,19 @@ jobs:
           path: rustfmt.patch
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Real volatile Valkey configuration
+        run: |
+          docker exec ${{ job.services.valkey.id }} valkey-cli CONFIG SET save ""
+          docker exec ${{ job.services.valkey.id }} valkey-cli CONFIG SET appendonly no
+          docker exec ${{ job.services.valkey.id }} valkey-cli CONFIG SET maxmemory-policy noeviction
+      - run: cargo clippy --locked --all-targets --features valkey-conformance -- -D warnings
+      - name: Real Memory and Valkey room parity
+        env:
+          VALKEY_URL: redis://127.0.0.1:6379/
+        run: |
+          set -o pipefail
+          cargo test --locked --features valkey-conformance tests::valkey::real_memory_and_valkey_replay_expiry_parity -- --exact --nocapture | tee real-valkey.log
+          grep -q '1 passed; 0 failed' real-valkey.log
       - name: Matching wasm runner
         run: |
           version=$(jq -r '.packages[] | select(.name == "wasm-bindgen") | .version' dependency-metadata.json)

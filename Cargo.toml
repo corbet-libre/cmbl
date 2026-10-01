@@ -20,3 +20,11 @@ data-encoding = "2.9"
 [dev-dependencies]
 futures = "0.3"
 wasm-bindgen-test = "0.3"
+
+[features]
+valkey-conformance = ["dep:cvlk", "dep:redis", "dep:tokio"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cvlk = { git = "https://github.com/corbet-foss/cvlk", branch = "main", optional = true }
+redis = { version = "1", default-features = false, features = ["tokio-comp"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"], optional = true }
