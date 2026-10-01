@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -28,7 +28,7 @@ jobs:
       - run: cargo metadata --locked --format-version 1 > dependency-metadata.json
       - run: rustc --version --verbose > resolution.txt
       - run: date --utc --iso-8601=seconds >> resolution.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: resolved-lock
           path: |
@@ -40,11 +40,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: resolved-lock
       - uses: dtolnay/rust-toolchain@stable
@@ -57,7 +57,7 @@ jobs:
           cargo fmt --all
           git diff -- '*.rs' > rustfmt.patch
           test ! -s rustfmt.patch
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: formatting
@@ -86,11 +86,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: resolved-lock
       - run: python3 .github/check-first-party.py
@@ -103,11 +103,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: resolved-lock
       - uses: dtolnay/rust-toolchain@nightly
@@ -121,7 +121,7 @@ jobs:
           tool: cargo-llvm-cov
       - run: cargo llvm-cov --locked --branch --json --output-path coverage.json --ignore-filename-regex '/tests/'
       - run: python3 .github/check-coverage.py coverage.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage
