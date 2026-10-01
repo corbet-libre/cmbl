@@ -3,11 +3,13 @@ on:
   push:
     branches: ['main']
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: substantive-ci
+  cancel-in-progress: false
+  queue: max
 env:
   CARGO_BUILD_JOBS: '2'
   CARGO_TERM_COLOR: always
