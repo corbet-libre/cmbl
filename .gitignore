@@ -1,0 +1,5 @@
+/target/
+/coverage.json
+/coverage.txt
+/dependency-metadata.json
+/rustfmt.patch
