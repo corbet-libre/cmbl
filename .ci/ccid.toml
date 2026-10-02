@@ -1,0 +1,27 @@
+schema = 1
+project = "cmbl"
+
+[checks.resolve]
+kind = "commands"
+commands = [["bash", ".ci/check.sh", "resolve"]]
+
+[checks.native]
+kind = "commands"
+commands = [["bash", ".ci/check.sh", "native"]]
+
+[checks.browser]
+kind = "commands"
+commands = [["bash", ".ci/check.sh", "browser"]]
+
+[checks.coverage]
+kind = "commands"
+commands = [["bash", ".ci/check.sh", "coverage"]]
+
+[checks.dependency-policy]
+kind = "commands"
+commands = [["bash", ".ci/check.sh", "dependency-policy"]]
+
+[checks.valkey]
+kind = "commands"
+commands = [["bash", ".ci/check.sh", "valkey"]]
+
