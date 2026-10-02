@@ -72,3 +72,28 @@ Native OpenSSL and portable native/browser blind-RSA round trips are written,
 including scope/tamper/refusal and actual Memory ordering tests. They have not
 executed. The strict coverage gate includes every production source with native
 issuer enabled; no exclusions or threshold reductions were added.
+
+## Common issuer lifetime
+
+`BudgetedIssuer::create` initializes one fresh key and quota anchor in the
+original scoped Store. `share(now)` opens another handle to that same private
+key and that same Store, after atomically checking the exact descriptor/quota
+anchor. Handles share the common allowance and original replay receipts. There
+is no raw key getter, imported-key activation, deserializer or reset method.
+Missing, corrupt or expired anchors refuse both sharing and issuance. A lost
+response is retried with the original operation and blinded request.
+
+The supported deployment is one issuer process per community incarnation, with
+in-process shared handles. A process restart cannot recover the key; creation
+against a still-live anchor refuses. The service must stop the previous process,
+create a fresh cmmr scope/incarnation and fresh common key, then replace the
+authenticated descriptor and active verifier together before admitting room
+traffic. Old descriptors must cease to authorize passes even if their original
+deadline has not elapsed. Never merely reopen the old incarnation or publish
+different per-replica keys. Cross-process key custody remains unsupported.
+
+The primitive native qualification predates the budget and sharing successor.
+Its result does not qualify these changes or the service rollout. Actual
+Memory/OpenSSL tests cover shared-handle quota exhaustion, exact-response
+reconciliation, concurrent issuance, live-anchor recreation refusal, expiry,
+anchor corruption/loss and old-token refusal under the replacement descriptor.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Require main declarations and one resolved revision per first-party crate."""
 import os
+import json
 import re
 import subprocess
 import sys
@@ -13,7 +14,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def check_lock(packages):
-    names = {p['name'] for p in packages if FIRST_PARTY.match(p.get('source', ''))}
+    names = {p['name'] for p in packages if FIRST_PARTY.match(p.get('source') or '')}
     for name in names:
         entries = [p for p in packages if p['name'] == name]
         if len(entries) != 1:
@@ -36,6 +37,16 @@ def check_manifest(value):
     elif isinstance(value, list):
         for item in value:
             check_manifest(item)
+
+
+def check_metadata(value, locked):
+    packages = value['packages']
+    check_lock(packages)
+    def identities(items):
+        return {(p['name'], p['version'], p['source']) for p in items
+                if FIRST_PARTY.match(p.get('source') or '')}
+    if identities(packages) != identities(locked):
+        raise ValueError('Resolved first-party graph differs from the retained lock')
 
 
 def rejects(function, value):
@@ -91,4 +102,8 @@ if __name__ == '__main__':
                 check_manifest(tomllib.loads(path.read_text()))
             elif path.name == 'Cargo.lock':
                 check_lock(tomllib.loads(path.read_text())['package'])
+        if '--metadata' in sys.argv:
+            name = sys.argv[sys.argv.index('--metadata') + 1]
+            check_metadata(json.loads(Path(name).read_text()),
+                           tomllib.loads(Path('Cargo.lock').read_text())['package'])
         print('First-party declarations follow main; locked crate revisions are unique')

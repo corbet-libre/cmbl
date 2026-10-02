@@ -7,6 +7,8 @@ use openssl::{
     pkey_ctx::PkeyCtx,
     rsa::{Padding, Rsa},
 };
+mod quota;
+pub use quota::BudgetedIssuer;
 
 pub struct Issuer {
     epoch: Epoch,

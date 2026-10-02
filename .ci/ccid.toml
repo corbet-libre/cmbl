@@ -25,3 +25,14 @@ commands = [["bash", ".ci/check.sh", "dependency-policy"]]
 kind = "commands"
 commands = [["bash", ".ci/check.sh", "valkey"]]
 
+[checks.wasm]
+kind = "commands"
+commands = [["bash", ".ci/check.sh", "wasm"]]
+
+[checks.acceptance-preflight]
+kind = "commands"
+commands = [["python3", ".ci/acceptance.py", "preflight"]]
+
+[checks.acceptance]
+kind = "commands"
+commands = [["python3", ".ci/acceptance.py", "run"]]
