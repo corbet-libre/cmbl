@@ -8,6 +8,11 @@ from pathlib import Path
 def check(report):
     if report.get('type') != 'llvm.coverage.json.export' or not report.get('data'):
         raise ValueError('Expected a nonempty LLVM coverage export')
+    expected = {str(path.resolve()) for path in Path('src').rglob('*.rs')}
+    observed = {str(Path(file['filename']).resolve()) for unit in report['data'] for file in unit['files']}
+    missing = expected - observed
+    if missing:
+        raise ValueError('Missing production sources: ' + ', '.join(sorted(missing)))
     failures = []
     lines = 0
     for unit in report['data']:

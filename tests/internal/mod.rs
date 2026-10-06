@@ -67,6 +67,13 @@ impl ProofVerifier for Preconditions {
             community: "test".into(),
             request: digest(r)?,
             valid_until: 5_000,
+            connection: match r.action {
+                Action::Resume { connection }
+                | Action::Connect { connection }
+                | Action::Renew { connection }
+                | Action::Disconnect { connection } => connection,
+                _ => [1; 16],
+            },
             resume_counter: Some(8),
         })
     }

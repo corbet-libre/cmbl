@@ -1,0 +1,173 @@
+# Shared, receipt-verified CI executable; product dependencies remain on ranges/main.
+when:
+  - event: manual
+skip_clone: true
+variables:
+  SOURCE_ARCHIVE: {default: ""}
+  SOURCE_SHA256: {default: ""}
+  DEPENDENCY_SOURCE_ARCHIVE: {default: ""}
+  DEPENDENCY_SOURCE_SHA256: {default: ""}
+  CI_TOOL_ARCHIVE: {default: ""}
+  CI_TOOL_SHA256: {default: ""}
+  CI_TOOL_BINARY: {default: ""}
+  CI_TOOL_BINARY_SHA256: {default: ""}
+  CI_JOBS: {default: ""}
+  CI_TEST_THREADS: {default: ""}
+  CI_MEMORY_MB: {default: ""}
+  CI_MEMORY_PER_JOB_MB: {default: ""}
+  CI_MIN_AVAILABLE_MB: {default: "8192"}
+  CI_REPOSITORY_URL: {default: ""}
+  CI_TIMEOUT: {default: ""}
+  CI_CACHE_ROOT: {default: ""}
+  CARGO_TARGET_DIR: {default: ""}
+  CI_NIX_JOBS: {default: ""}
+  CI_LINKER: {default: system}
+  TMPDIR: {default: ""}
+steps:
+  - name: full-acceptance
+    image: bash
+    environment:
+      CCID_REVISION: '9f9f65f305491ceb146ee31e356eb561af06af9b'
+    commands:
+      - |
+        set -euo pipefail
+        [ "$${CI:-}" = crow ]
+        [ -z "$${CHECKS:-}" ]
+        printf '%s  %s\n' "$$CI_TOOL_SHA256" "$$CI_TOOL_ARCHIVE" | sha256sum --check --strict
+        test "$$(git get-tar-commit-id < "$$CI_TOOL_ARCHIVE")" = "$$CCID_REVISION"
+        printf '%s  %s\n' "$$CI_TOOL_BINARY_SHA256" "$$CI_TOOL_BINARY" | sha256sum --check --strict
+        test "$$("$$CI_TOOL_BINARY" source-revision)" = "$$CCID_REVISION"
+        # Stable, browser and coverage are separate immutable reviewed identities.
+        # Browser tools qualified in Crow4114; product browser gates remain required.
+        CI_ACCEPTANCE_STABLE_SETUP='/nix/store/27wxcbxwrrfrhci0034w2lvandzaph31-cmty-ci-tools/share/cmty-ci-tools/setup.sh'
+        CI_ACCEPTANCE_STABLE_SHA256='a8064e3bbca6801e8c963d7050f2e9c34a0fe4671339851381007fcb7f4437d2'
+        CI_ACCEPTANCE_BROWSER_SETUP='/nix/store/21z7gs8b28i9mrgcn0bkmyghv8919p4h-cmty-browser-tools/share/cmty-browser-tools/setup.sh'
+        CI_ACCEPTANCE_BROWSER_SHA256='4b4687d368b60df48b6c598b947c3a4715adcb7a1d23eca8b2e080fbb0f1866b'
+        CI_ACCEPTANCE_COVERAGE_SETUP='/nix/store/a7wahr975zknixs667f1vl68r4jpm5kx-cmty-coverage-tools/share/cmty-coverage-tools/setup.sh'
+        CI_ACCEPTANCE_COVERAGE_SHA256='212a02eaa479a023b9ef94d8907269de2c6f1c8dce6337f4f6904b8f97ba6f96'
+        printf '%s  %s\n' "$$CI_ACCEPTANCE_STABLE_SHA256" "$$CI_ACCEPTANCE_STABLE_SETUP" | sha256sum --check --strict
+        . "$$CI_ACCEPTANCE_STABLE_SETUP"
+        acceptance_stable_cargo=$$(command -v cargo)
+        acceptance_stable_rustc=$$(command -v rustc)
+        case "$$CI_ACCEPTANCE_BROWSER_SETUP" in /nix/store/*/share/*/setup.sh) ;; *) exit 2;; esac
+        printf '%s  %s\n' "$$CI_ACCEPTANCE_BROWSER_SHA256" "$$CI_ACCEPTANCE_BROWSER_SETUP" | sha256sum --check --strict
+        acceptance_scratch=$$(mktemp -d /tmp/ccid-acceptance.XXXXXXXX)
+        trap 'rm -rf -- "$$acceptance_scratch"' EXIT
+        export TMPDIR="$$acceptance_scratch" CMEET_BROWSER_CACHE="$$acceptance_scratch/browser-cache"
+        mkdir -m 700 "$$CMEET_BROWSER_CACHE"
+        test -w "$$CMEET_BROWSER_CACHE"
+        . "$$CI_ACCEPTANCE_BROWSER_SETUP"
+        [ "$$(command -v cargo)" = "$$acceptance_stable_cargo" ]
+        [ "$$(command -v rustc)" = "$$acceptance_stable_rustc" ]
+        # Verify availability now; source coverage only inside owner coverage subshell.
+        printf '%s  %s\n' "$$CI_ACCEPTANCE_COVERAGE_SHA256" "$$CI_ACCEPTANCE_COVERAGE_SETUP" | sha256sum --check --strict
+        export CI_ACCEPTANCE_STABLE_SETUP CI_ACCEPTANCE_STABLE_SHA256
+        export CI_ACCEPTANCE_BROWSER_SETUP CI_ACCEPTANCE_BROWSER_SHA256
+        export CI_ACCEPTANCE_COVERAGE_SETUP CI_ACCEPTANCE_COVERAGE_SHA256
+        export TMPDIR="$${TMPDIR:-/tmp}" PYTHONDONTWRITEBYTECODE=1
+        : "$${CARGO_HOME:?}" "$${SOURCE_ARCHIVE:?}" "$${SOURCE_SHA256:?}" "$${CI_COMMIT_SHA:?}"
+        : "$${CI_REPOSITORY_URL:?}" "$${DEPENDENCY_SOURCE_ARCHIVE:?}" "$${DEPENDENCY_SOURCE_SHA256:?}"
+        case "$$CI_COMMIT_SHA" in *[!0-9a-f]*|'') exit 2;; esac
+        [ "$${#CI_COMMIT_SHA}" = 40 ]
+        mkdir -p "$$CARGO_HOME/ccid-artifacts/acceptance"
+        CI_ACCEPTANCE_ARTIFACTS=$$(mktemp -d "$$CARGO_HOME/ccid-artifacts/acceptance/$$CI_COMMIT_SHA.XXXXXXXX")
+        export CI_ACCEPTANCE_ARTIFACTS CCID_RESOLVE_CARGO=1
+        # ccid9f9 always reads SOURCE_ARCHIVE; --repo is only its output-overlap guard.
+        # An explicit empty sibling keeps that guard independent of a broad TMPDIR.
+        mkdir "$$CI_ACCEPTANCE_ARTIFACTS/consumer-anchor"
+        python3 - <<'BOOTSTRAP'
+        import hashlib, os, re, sys, tarfile
+        archive = os.environ['DEPENDENCY_SOURCE_ARCHIVE']
+        digest = os.environ['DEPENDENCY_SOURCE_SHA256']
+        if not re.fullmatch('[0-9a-f]{64}', digest):
+            raise SystemExit('invalid closure digest')
+        with open(archive, 'rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
+                raise SystemExit('closure digest mismatch')
+            stream.seek(0)
+            with tarfile.open(fileobj=stream, mode='r:') as package:
+                members = [m for m in package if m.name == 'closure.py']
+                if len(members) != 1 or not members[0].isfile() or members[0].size > 1024 * 1024:
+                    raise SystemExit('invalid closure consumer member')
+                program = package.extractfile(members[0]).read()
+        if hashlib.sha256(program).hexdigest() != 'd52ec6441f8c411253b239a64ea9051e99cd2068de3af3ede1fcbd3a768c0362':
+            raise SystemExit('unreviewed closure consumer')
+        # The child has verified Git transports for both the original and candidate graph.
+        # Every selector is a literal. Neither command reads a caller gate list.
+        command = r'''
+        cp "$$DEPENDENCY_CLOSURE_MANIFEST" "$$CI_ACCEPTANCE_ARTIFACTS/closure-manifest.json"
+        if "$$CI_TOOL_BINARY" check --archive "$$SOURCE_ARCHIVE" --sha256 "$$SOURCE_SHA256" --commit "$$CI_COMMIT_SHA" --check acceptance-preflight > "$$CI_ACCEPTANCE_ARTIFACTS/preflight.log" 2>&1; then
+          cat "$$CI_ACCEPTANCE_ARTIFACTS/preflight.log"
+        else
+          code=$$?; cat "$$CI_ACCEPTANCE_ARTIFACTS/preflight.log"; exit "$$code"
+        fi
+        if "$$CI_TOOL_BINARY" cargo-resolve --repo "$$CI_ACCEPTANCE_ARTIFACTS/consumer-anchor" --output-dir "$$CI_ACCEPTANCE_ARTIFACTS/resolution" --check acceptance > "$$CI_ACCEPTANCE_ARTIFACTS/resolution.log" 2>&1; then
+          cat "$$CI_ACCEPTANCE_ARTIFACTS/resolution.log"
+        else
+          code=$$?; cat "$$CI_ACCEPTANCE_ARTIFACTS/resolution.log"; exit "$$code"
+        fi
+        '''
+        sys.argv = ['closure.py', 'consume', '--archive', archive, '--sha256', digest,
+                    '--source-archive', os.environ['SOURCE_ARCHIVE'],
+                    '--source-sha256', os.environ['SOURCE_SHA256'],
+                    '--commit', os.environ['CI_COMMIT_SHA'],
+                    '--repository', os.environ['CI_REPOSITORY_URL'], '--scratch', os.environ['TMPDIR'],
+                    '--', 'bash', '-euo', 'pipefail', '-c', command]
+        exec(compile(program, 'verified-canonical-closure', 'exec'), {'__name__': '__main__'})
+        BOOTSTRAP
+        python3 - <<'AUDIT'
+        import hashlib, json, os, pathlib, re
+        root = pathlib.Path(os.environ['CI_ACCEPTANCE_ARTIFACTS']).resolve()
+        def require(ok, message):
+            if not ok: raise SystemExit(message)
+        def sha(path):
+            require(path.is_file() and not path.is_symlink(), 'missing or linked artifact')
+            with path.open('rb') as stream: return hashlib.file_digest(stream, 'sha256').hexdigest()
+        receipts = list((root / 'resolution').glob('cargo-resolution-*.json'))
+        require(len(receipts) == 1, 'one exact resolution receipt required')
+        receipt = json.loads(receipts[0].read_text())
+        for key, value in {'schema': 3, 'status': 'candidate', 'accepted': True,
+                           'mode': 'refresh', 'compatibility_status': 'checked-against-baseline',
+                           'validation_checks': ['acceptance'], 'validation_status': 'passed',
+                           'validation_error': None, 'direct_breaking_changes': []}.items():
+            require(receipt.get(key) == value, 'failed or incomplete resolver validation: ' + key)
+        for key, env in [('source_commit', 'CI_COMMIT_SHA'), ('source_archive_sha256', 'SOURCE_SHA256'),
+                         ('repository', 'CI_REPOSITORY_URL')]:
+            require(receipt.get(key) == os.environ[env], 'source identity mismatch: ' + key)
+        for key in ['validation_source_sha256', 'validation_manifest_sha256',
+                    'candidate_lock_sha256', 'original_lock_sha256']:
+            require(re.fullmatch('[0-9a-f]{64}', receipt.get(key) or ''), 'missing digest: ' + key)
+        for key, digest_key in [('lock_snapshot', 'candidate_lock_sha256'),
+                                 ('original_lock_snapshot', 'original_lock_sha256')]:
+            path = pathlib.Path(receipt[key])
+            require(path.resolve().parent == (root / 'resolution'), 'lock outside retained resolution')
+            require(sha(path) == receipt[digest_key], 'retained lock differs')
+        phases = json.loads((root / 'phases.json').read_text())
+        expected = ['native', 'wasm', 'browser', 'coverage', 'dependency-policy']
+        require(isinstance(phases, list) and [p.get('name') for p in phases] == expected, 'incomplete fixed phase list')
+        for phase in phases:
+            require(phase.get('status') == 'passed', 'phase did not pass')
+            require(phase.get('lock_before') == phase.get('lock_after') == receipt['candidate_lock_sha256'], 'phase lock differs')
+            require(phase.get('log') == phase['name'] + '.log', 'unexpected phase log')
+        files = ['preflight.log', 'resolution.log', 'closure-manifest.json', 'phases.json',
+                 'baseline-dependency-metadata.json', 'resolved-dependency-metadata.json',
+                 'coverage.json', 'coverage.lcov', 'coverage.txt', 'tool-versions.txt'] + [p['log'] for p in phases]
+        artifacts = {name: sha(root / name) for name in files}
+        closure = json.loads((root / 'closure-manifest.json').read_text())
+        require(closure.get('freshness') == 'main-observed', 'historical closure cannot claim fresh acceptance')
+        require(all(r.get('main_observed_at') for r in closure['repositories']), 'missing source-main observations')
+        identities = [c for c in closure['consumers'] if c['commit'] == receipt['source_commit']
+                      and c['url'] == receipt['repository'] and c['source_sha256'] == receipt['source_archive_sha256']]
+        require(len(identities) == 1, 'source not bound to retained closure')
+        result = {'schema': 1, 'status': 'full-gates-passed', 'workflow': 'acceptance',
+                  'source': identities[0], 'dependency_closure_sha256': os.environ['DEPENDENCY_SOURCE_SHA256'],
+                  'ccid_revision': os.environ['CCID_REVISION'], 'ccid_binary_sha256': os.environ['CI_TOOL_BINARY_SHA256'],
+                  'resolution_receipt_sha256': sha(receipts[0]), 'original_lock_sha256': receipt['original_lock_sha256'],
+                  'candidate_lock_sha256': receipt['candidate_lock_sha256'], 'phases': phases, 'artifacts': artifacts,
+                  'tool_setups': {name: {'path': os.environ['CI_ACCEPTANCE_' + name.upper() + '_SETUP'],
+                                       'sha256': os.environ['CI_ACCEPTANCE_' + name.upper() + '_SHA256']}
+                                 for name in ['stable', 'browser', 'coverage']},
+                  'promotion': 'requires independent Crow/head/base/report verification'}
+        (root / 'acceptance.json').write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
+        print(json.dumps({'acceptance_receipt': str(root / 'acceptance.json'), 'sha256': sha(root / 'acceptance.json')}))
+        AUDIT

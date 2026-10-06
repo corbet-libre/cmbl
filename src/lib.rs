@@ -1,6 +1,8 @@
 //! Blind expiring room ordering. Proof construction remains an explicit gate.
 #![forbid(unsafe_code)]
 
+pub mod passes;
+
 use cmmr::{Deadline, Record, Revision, Store, Write};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -53,6 +55,7 @@ pub struct Permit {
     community: String,
     request: [u8; 32],
     valid_until: u64,
+    connection: Id,
     resume_counter: Option<u64>,
 }
 
@@ -89,6 +92,7 @@ struct Frame {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Room {
+    ordering: Id,
     sequence: u64,
     counter: u64,
     connections: BTreeMap<Id, u64>,
@@ -98,7 +102,7 @@ struct Room {
 }
 
 /// Opaque retained ciphertext. Sequence is independent of the MLS-order counter.
-#[derive(Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RelayFrame {
     pub sequence: u64,
     pub counter: u64,
@@ -109,8 +113,11 @@ impl std::fmt::Debug for RelayFrame {
         f.write_str("RelayFrame([redacted])")
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Outcome {
+    /// Fresh opaque transport generation. Counter values across generations are
+    /// incomparable; members must reconcile the authenticated MLS group state.
+    pub ordering: Id,
     pub counter: u64,
     pub active_connections: usize,
     pub traffic_bytes: u64,
@@ -129,8 +136,9 @@ struct OperationReceipt {
     through: u64,
 }
 impl OperationReceipt {
-    fn outcome(&self) -> Outcome {
+    fn outcome(&self, ordering: Id) -> Outcome {
         Outcome {
+            ordering,
             counter: self.counter,
             active_connections: self.connections,
             traffic_bytes: self.volume,
@@ -218,7 +226,7 @@ impl<S: Store> Assembly<S> {
                 room.receipts.retain(|_, receipt| receipt.expires > now);
                 if let Some(receipt) = room.receipts.get(&request.operation) {
                     return if receipt.fingerprint == fingerprint {
-                        Ok(receipt.outcome())
+                        Ok(receipt.outcome(room.ordering))
                     } else {
                         Err(Error::Conflict)
                     };
@@ -233,7 +241,10 @@ impl<S: Store> Assembly<S> {
                     return Err(Error::ResumeRequired);
                 };
                 let counter = permit.resume_counter.ok_or(Error::Refused)?;
+                let mut ordering = [0; 16];
+                getrandom::fill(&mut ordering).map_err(|_| Error::Storage)?;
                 Room {
+                    ordering,
                     sequence: 0,
                     counter,
                     connections: BTreeMap::from([(connection, deadline)]),
@@ -243,6 +254,13 @@ impl<S: Store> Assembly<S> {
                 }
             }
         };
+        if matches!(
+            request.action,
+            Action::Order { .. } | Action::Relay { .. } | Action::Read { .. }
+        ) && !room.connections.contains_key(&permit.connection)
+        {
+            return Err(Error::Refused);
+        }
         if !matches!(request.action, Action::Read { .. })
             && room.receipts.len() >= self.limits.operation_receipts
         {
@@ -396,6 +414,7 @@ fn hex(value: &Id) -> String {
 }
 fn outcome(room: &Room) -> Outcome {
     Outcome {
+        ordering: room.ordering,
         counter: room.counter,
         active_connections: room.connections.len(),
         traffic_bytes: room.volume,
