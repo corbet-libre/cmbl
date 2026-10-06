@@ -8,14 +8,16 @@ project = "cmbl"
 kind = "commands"
 commands = [["bash", ".ci/verify.sh"]]
 cache_tools = [["rustc", "-vV"], ["cargo", "--version"], ["python3", "--version"], ["jq", "--version"], ["curl", "--version"], ["valkey-server", "--version"], ["valkey-cli", "--version"], ["rustup", "run", "nightly", "rustc", "-vV"], ["rustup", "run", "nightly", "cargo", "llvm-cov", "--version"]]
-cache_outputs = ["coverage.json", "coverage.lcov", "coverage.txt"]
+cache_outputs = ["coverage.json"]
 
 [checks.advisories]
 kind = "commands"
-commands = [["cargo", "deny", "--locked", "check", "advisories"]]
+# Merge inside the checked command (runner-level redirection does not survive
+# ccid's subprocess pipes): cargo-deny diagnostics must reach the kept log.
+commands = [["bash", "-c", "exec 2>&1; exec cargo deny --locked check advisories"]]
 
 [render]
-tool_revision = "81ebac8e86e20bc93b69d5e912bbcb0c0d036d58"
+tool_revision = "77a5ac18542750de020ebf753d22c3200530282b"
 
 [jobs.verify]
 scheduler = "crow"
