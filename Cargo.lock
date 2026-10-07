@@ -123,7 +123,7 @@ dependencies = [
 [[package]]
 name = "cmmr"
 version = "0.1.0"
-source = "git+https://github.com/corbet-foss/cmmr?branch=main#6ec73e1f786934d4a0a4ff2d81baec60395feb30"
+source = "git+https://git.corbet.ch/corbet-foss/cmmr?branch=main#b0fcb6897cbecab15413c3a4891edeba863dc5a3"
 dependencies = [
  "serde",
 ]
@@ -185,7 +185,7 @@ dependencies = [
 [[package]]
 name = "cthl"
 version = "0.0.0"
-source = "git+https://github.com/corbet-foss/cthl?branch=main#e719761a51795a115a969f50353df27f8c152bfd"
+source = "git+https://git.corbet.ch/corbet-foss/cthl?branch=main#5934f7bb6d232e9fe8ade775ad8c715b028e0de2"
 dependencies = [
  "governor",
 ]
@@ -193,10 +193,11 @@ dependencies = [
 [[package]]
 name = "cvlk"
 version = "0.1.0"
-source = "git+https://github.com/corbet-foss/cvlk?branch=main#a72bf4c44df3ec821ef38e52e89dac72cdd1ed39"
+source = "git+https://git.corbet.ch/corbet-foss/cvlk?branch=main#5ddfc77d054a14948de49c493a0e777658f6e1c3"
 dependencies = [
  "cmmr",
  "cthl",
+ "data-encoding",
  "redis",
  "serde",
  "serde_json",

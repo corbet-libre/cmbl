@@ -17,7 +17,7 @@ kind = "commands"
 commands = [["bash", "-c", "exec 2>&1; exec cargo deny --locked check advisories"]]
 
 [render]
-tool_revision = "77a5ac18542750de020ebf753d22c3200530282b"
+tool_revision = "e38f347d6941aa105ac4b55a0d4b8fec2ef22433"
 
 [jobs.verify]
 scheduler = "crow"

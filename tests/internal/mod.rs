@@ -452,6 +452,9 @@ impl Store for InterleavedStore {
     async fn get(&self, key: &str) -> std::result::Result<Option<Record>, cmmr::Error> {
         self.memory.get(key).await
     }
+    async fn check_current(&self, checks: &[cmmr::Check]) -> std::result::Result<(), cmmr::Error> {
+        self.memory.check_current(checks).await
+    }
     async fn compare_exchange(&self, batch: &[Write]) -> std::result::Result<(), cmmr::Error> {
         if self.race.swap(0, Ordering::SeqCst) == 1 {
             let mut record = batch[0].record.clone();
