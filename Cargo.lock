@@ -123,7 +123,7 @@ dependencies = [
 [[package]]
 name = "cmmr"
 version = "0.1.0"
-source = "git+https://git.corbet.ch/corbet-foss/cmmr?branch=main#b0fcb6897cbecab15413c3a4891edeba863dc5a3"
+source = "git+https://git.corbet.ch/corbet-foss/cmmr?branch=main#1bdfa957fa92d3f1c23f011d0a13237332421ae0"
 dependencies = [
  "serde",
 ]
@@ -185,7 +185,7 @@ dependencies = [
 [[package]]
 name = "cthl"
 version = "0.0.0"
-source = "git+https://git.corbet.ch/corbet-foss/cthl?branch=main#5934f7bb6d232e9fe8ade775ad8c715b028e0de2"
+source = "git+https://git.corbet.ch/corbet-foss/cthl?branch=main#d95d7f7c65cf47eb47953dae2238a642b3730a4a"
 dependencies = [
  "governor",
 ]
@@ -193,7 +193,7 @@ dependencies = [
 [[package]]
 name = "cvlk"
 version = "0.1.0"
-source = "git+https://git.corbet.ch/corbet-foss/cvlk?branch=main#5ddfc77d054a14948de49c493a0e777658f6e1c3"
+source = "git+https://git.corbet.ch/corbet-foss/cvlk?branch=main#2809209576dec053d4065651bc87d5d20bead24e"
 dependencies = [
  "cmmr",
  "cthl",
