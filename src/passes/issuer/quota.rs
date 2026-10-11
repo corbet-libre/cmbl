@@ -1,5 +1,5 @@
 //! One common admission allowance; the issuer never receives a room identifier.
-use super::{Issuer, PKey, Rsa};
+use super::Issuer;
 use crate::{
     Error, Id, Result,
     passes::{BlindRequest, Epoch, RSA_BYTES},
@@ -58,19 +58,24 @@ impl<S: Store> BudgetedIssuer<S> {
             return Err(Error::Invalid);
         }
         let deadline = Deadline::new(valid_until).map_err(|_| Error::Invalid)?;
-        let rsa = Rsa::generate(3072).map_err(|_| Error::Refused)?;
+        let pair = blind_rsa_signatures::KeyPair::<
+            blind_rsa_signatures::Sha384,
+            blind_rsa_signatures::PSS,
+            blind_rsa_signatures::Randomized,
+        >::generate(&mut blind_rsa_signatures::DefaultRng, 3072)
+        .map_err(|_| Error::Refused)?;
         let epoch = Epoch {
             community,
             epoch,
             valid_from,
             valid_until,
-            public_key_der: rsa.public_key_to_der().map_err(|_| Error::Refused)?,
+            public_key_der: pair.pk.to_der().map_err(|_| Error::Refused)?,
         };
         let context = epoch.context()?;
         let signer = Issuer {
             epoch,
             context,
-            key: PKey::from_rsa(rsa).map_err(|_| Error::Refused)?,
+            key: pair.sk,
         };
         let anchor_value = postcard::to_allocvec(&(context, quota)).map_err(|_| Error::Invalid)?;
         let generation = format!("room-pass-{}", data_encoding::HEXLOWER.encode(&context));

@@ -6,6 +6,22 @@ use cmbl::settlement::{Epoch, PreparedToken, Purpose, Request, Verifier};
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
+/// Fresh 3072-bit RFC 9474 issuer key from the maintained crate.
+#[cfg(all(feature = "issuer", not(target_arch = "wasm32")))]
+struct TestKey(KeyPair<Sha384, PSS, Randomized>);
+#[cfg(all(feature = "issuer", not(target_arch = "wasm32")))]
+impl TestKey {
+    fn generate() -> Self {
+        Self(KeyPair::generate(&mut DefaultRng, 3072).unwrap())
+    }
+    fn public_key_to_der(&self) -> Result<Vec<u8>, blind_rsa_signatures::Error> {
+        self.0.pk.to_der()
+    }
+    fn private_key_to_der(&self) -> Result<Vec<u8>, blind_rsa_signatures::Error> {
+        self.0.sk.to_der()
+    }
+}
+
 fn epoch(public_key_der: Vec<u8>) -> Epoch {
     Epoch {
         purpose: Purpose::OutcomeDeposit,
@@ -193,9 +209,8 @@ fn cancelled_blinding_and_invalid_descriptors_never_produce_a_token() {
 #[test]
 fn provisioned_key_restore_matches_original_anchor_and_old_tokens_need_no_private_key() {
     use cmbl::settlement::issuer::Issuer;
-    use openssl::rsa::Rsa;
     use zeroize::Zeroizing;
-    let rsa = Rsa::generate(3072).unwrap();
+    let rsa = TestKey::generate().unwrap();
     let private = Zeroizing::new(rsa.private_key_to_der().unwrap());
     let epoch = epoch(rsa.public_key_to_der().unwrap());
     let issuer = Issuer::from_pkcs1_der(epoch.clone(), &private).unwrap();
@@ -229,7 +244,7 @@ fn provisioned_key_restore_matches_original_anchor_and_old_tokens_need_no_privat
         Err(cmbl::Error::Invalid)
     ));
     assert!(Issuer::from_pkcs1_der(epoch.clone(), &[]).is_err());
-    let other = Rsa::generate(3072).unwrap();
+    let other = TestKey::generate().unwrap();
     let other_private = Zeroizing::new(other.private_key_to_der().unwrap());
     assert!(Issuer::from_pkcs1_der(epoch.clone(), &other_private).is_err());
     let mut replaced = epoch.clone();
@@ -247,10 +262,9 @@ fn provisioned_key_restore_matches_original_anchor_and_old_tokens_need_no_privat
 #[test]
 fn room_and_outcome_transcripts_are_distinct_and_dedicated_keys_refuse_cross_use() {
     use cmbl::{Action, ProofVerifier, passes, settlement::issuer::Issuer};
-    use openssl::rsa::Rsa;
     use zeroize::Zeroizing;
-    let room_key = Rsa::generate(3072).unwrap();
-    let deposit_key = Rsa::generate(3072).unwrap();
+    let room_key = TestKey::generate().unwrap();
+    let deposit_key = TestKey::generate().unwrap();
     let room_epoch = passes::Epoch {
         community: "test".into(),
         epoch: 1,

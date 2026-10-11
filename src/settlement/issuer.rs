@@ -1,13 +1,13 @@
 //! Native blind signing only. Authenticated quota/anchor activation belongs to
 //! the accounting owner and must precede exposure of any signed response.
 use super::{BlindRequest, Epoch};
+use crate::blind::RsaSecretKey;
 use crate::{Error, Result, passes::RSA_BYTES};
-use openssl::pkey::{PKey, Private};
 
 pub struct Issuer {
     epoch: Epoch,
     context: [u8; 32],
-    key: PKey<Private>,
+    key: RsaSecretKey,
 }
 impl Issuer {
     /// Restore only the original provisioned dedicated purpose key matching the

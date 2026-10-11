@@ -1,6 +1,6 @@
 //! Shared maintained RSA suite; protocol transcripts belong to each purpose.
 use crate::{Error, Result};
-use blind_rsa_signatures::{PSS, PublicKey, Randomized, Sha384};
+use blind_rsa_signatures::{PSS, PublicKey, Randomized, SecretKey, Sha384};
 
 pub(crate) type RsaPublicKey = PublicKey<Sha384, PSS, Randomized>;
 
@@ -26,58 +26,41 @@ pub(crate) fn public_key(der: &[u8]) -> Result<RsaPublicKey> {
     Ok(key)
 }
 
+pub(crate) type RsaSecretKey = SecretKey<Sha384, PSS, Randomized>;
+
+/// Parse an operator-provisioned issuer key (PKCS#1 or PKCS#8 DER) and require
+/// it to be the exact 3072-bit key the epoch anchor names.
 #[cfg(all(feature = "issuer", not(target_arch = "wasm32")))]
-pub(crate) fn private_key(
-    der: &[u8],
-    public_der: &[u8],
-) -> Result<openssl::pkey::PKey<openssl::pkey::Private>> {
-    use openssl::{pkey::PKey, rsa::Rsa};
+pub(crate) fn private_key(der: &[u8], public_der: &[u8]) -> Result<RsaSecretKey> {
     if der.len() > 4096 {
         return Err(Error::Invalid);
     }
-    let rsa = Rsa::private_key_from_der(der).map_err(|_| Error::Invalid)?;
-    if !rsa.check_key().map_err(|_| Error::Invalid)?
-        || rsa.n().num_bits() != 3072
-        || rsa.e().to_vec() != [1, 0, 1]
-        || rsa.public_key_to_der().map_err(|_| Error::Invalid)? != public_der
+    // from_der validates the key material and precomputes the CRT values.
+    let key = RsaSecretKey::from_der(der).map_err(|_| Error::Invalid)?;
+    let derived = key.public_key().map_err(|_| Error::Invalid)?;
+    if derived.to_der().map_err(|_| Error::Invalid)? != public_der
+        || public_key(public_der).is_err()
     {
         return Err(Error::Refused);
     }
-    PKey::from_rsa(rsa).map_err(|_| Error::Invalid)
+    Ok(key)
 }
 
+/// RFC 9474 blind signature over `blinded`, produced and re-verified by the
+/// maintained `blind-rsa-signatures` crate. The wire format is unchanged: a
+/// big-endian integer exactly as wide as the modulus.
 #[cfg(all(feature = "issuer", not(target_arch = "wasm32")))]
-pub(crate) fn sign(
-    key: &openssl::pkey::PKey<openssl::pkey::Private>,
-    blinded: &[u8],
-) -> Result<Vec<u8>> {
-    use openssl::{pkey_ctx::PkeyCtx, rsa::Padding};
-    let modulus = key.rsa().map_err(|_| Error::Refused)?.n().to_vec();
-    if blinded.iter().all(|byte| *byte == 0) || blinded >= modulus.as_slice() {
+pub(crate) fn sign(key: &RsaSecretKey, blinded: &[u8]) -> Result<Vec<u8>> {
+    if blinded.len() != crate::passes::RSA_BYTES || blinded.iter().all(|byte| *byte == 0) {
         return Err(Error::Invalid);
     }
-    let mut signer = PkeyCtx::new(key).map_err(|_| Error::Refused)?;
-    signer.sign_init().map_err(|_| Error::Refused)?;
-    signer
-        .set_rsa_padding(Padding::NONE)
-        .map_err(|_| Error::Refused)?;
-    let mut signature = Vec::new();
-    signer
-        .sign_to_vec(blinded, &mut signature)
-        .map_err(|_| Error::Refused)?;
-    if signature.len() != crate::passes::RSA_BYTES {
+    let signature = key.blind_sign(blinded).map_err(|error| match error {
+        // An integer at or above the modulus is a malformed request.
+        blind_rsa_signatures::Error::UnsupportedParameters => Error::Invalid,
+        _ => Error::Refused,
+    })?;
+    if signature.0.len() != crate::passes::RSA_BYTES {
         return Err(Error::Refused);
     }
-    let mut verify = PkeyCtx::new(key).map_err(|_| Error::Refused)?;
-    verify.verify_init().map_err(|_| Error::Refused)?;
-    verify
-        .set_rsa_padding(Padding::NONE)
-        .map_err(|_| Error::Refused)?;
-    if !verify
-        .verify(blinded, &signature)
-        .map_err(|_| Error::Refused)?
-    {
-        return Err(Error::Refused);
-    }
-    Ok(signature)
+    Ok(signature.0)
 }

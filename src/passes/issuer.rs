@@ -2,17 +2,14 @@
 //! actual admission and its reviewed issuance quota plus cthl. No public endpoint
 //! or new membership verdict is implemented by this primitive.
 use super::{BlindRequest, Epoch, Error, RSA_BYTES, Result};
-use openssl::{
-    pkey::{PKey, Private},
-    rsa::Rsa,
-};
+use crate::blind::RsaSecretKey;
 mod quota;
 pub use quota::BudgetedIssuer;
 
 pub struct Issuer {
     epoch: Epoch,
     context: [u8; 32],
-    key: PKey<Private>,
+    key: RsaSecretKey,
 }
 impl Issuer {
     /// Dedicated operator-managed epoch key; no TLS or other-purpose key reuse.

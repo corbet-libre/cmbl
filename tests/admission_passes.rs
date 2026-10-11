@@ -1,5 +1,5 @@
 //! Real RSA blind issue/unblind and request signatures through actual Memory CAS.
-//! Pure-Rust private RSA below is a test issuer only. Production uses OpenSSL.
+//! Pure-Rust private RSA below is a test issuer only; production uses the same crate.
 use blind_rsa_signatures::{DefaultRng, KeyPair, PSS, Randomized, Sha384};
 use cmbl::{
     Action, Assembly, Error, Limits, ProofVerifier, Request,
@@ -9,6 +9,22 @@ use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+/// Fresh 3072-bit RFC 9474 issuer key from the maintained crate.
+#[cfg(all(feature = "issuer", not(target_arch = "wasm32")))]
+struct TestKey(KeyPair<Sha384, PSS, Randomized>);
+#[cfg(all(feature = "issuer", not(target_arch = "wasm32")))]
+impl TestKey {
+    fn generate() -> Self {
+        Self(KeyPair::generate(&mut DefaultRng, 3072).unwrap())
+    }
+    fn public_key_to_der(&self) -> Result<Vec<u8>, blind_rsa_signatures::Error> {
+        self.0.pk.to_der()
+    }
+    fn private_key_to_der(&self) -> Result<Vec<u8>, blind_rsa_signatures::Error> {
+        self.0.sk.to_der()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Time;
@@ -210,8 +226,8 @@ fn actual_blind_pass_binds_room_connection_request_epoch_and_restart() {
 
 #[cfg(all(feature = "issuer", not(target_arch = "wasm32")))]
 #[test]
-fn actual_openssl_issuer_has_no_ledger_and_refuses_foreign_epoch_or_malformed_blind() {
-    let rsa = openssl::rsa::Rsa::generate(3072).unwrap();
+fn actual_crate_issuer_has_no_ledger_and_refuses_foreign_epoch_or_malformed_blind() {
+    let rsa = TestKey::generate().unwrap();
     let epoch = Epoch {
         community: "test".into(),
         epoch: 7,
