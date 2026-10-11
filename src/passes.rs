@@ -2,10 +2,9 @@
 //! issuance limits; no allocation ledger or introduction debit exists here.
 //! The common epoch descriptor must come from authenticated community policy,
 //! never a personalized issuer response or the anonymous peer's presentation.
-use crate::{Action, Error, Id, Permit, ProofVerifier, Request, Result};
+use crate::{Action, Error, Id, Permit, ProofVerifier, Request, Result, blind::RsaPublicKey};
 use blind_rsa_signatures::{
-    BlindSignature, BlindingResult, DefaultRng, MessageRandomizer, PSS, PublicKey, Randomized,
-    Sha384, Signature,
+    BlindSignature, BlindingResult, DefaultRng, MessageRandomizer, Signature,
 };
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -13,7 +12,6 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const RSA_BYTES: usize = 384;
 pub const MAX_PROOF_BYTES: usize = 8192;
-type RsaPublicKey = PublicKey<Sha384, PSS, Randomized>;
 
 /// One common RSA-3072 key per community/epoch, dedicated to room admission.
 /// All times are milliseconds, matching Assembly and volatile Storage.
@@ -28,24 +26,7 @@ pub struct Epoch {
 }
 impl Epoch {
     fn key(&self) -> Result<RsaPublicKey> {
-        if self.public_key_der.len() > 1024 {
-            return Err(Error::Invalid);
-        }
-        let key = RsaPublicKey::from_der(&self.public_key_der).map_err(|_| Error::Invalid)?;
-        if key.to_der().map_err(|_| Error::Invalid)? != self.public_key_der {
-            return Err(Error::Invalid);
-        }
-        let modulus = key.components().n();
-        let exponent = key.components().e();
-        let exponent = exponent
-            .iter()
-            .position(|byte| *byte != 0)
-            .map(|start| &exponent[start..])
-            .unwrap_or_default();
-        if modulus.len() != RSA_BYTES || modulus[0] & 0x80 == 0 || exponent != [1, 0, 1] {
-            return Err(Error::Invalid);
-        }
-        Ok(key)
+        crate::blind::public_key(&self.public_key_der)
     }
     pub fn context(&self) -> Result<[u8; 32]> {
         cmmr::Scope::new(&self.community, "room-pass").map_err(|_| Error::Invalid)?;

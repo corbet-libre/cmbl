@@ -97,3 +97,43 @@ Its result does not qualify these changes or the service rollout. Actual
 Memory/OpenSSL tests cover shared-handle quota exhaustion, exact-response
 reconciliation, concurrent issuance, live-anchor recreation refusal, expiry,
 anchor corruption/loss and old-token refusal under the replacement descriptor.
+
+
+## Outcome-deposit token primitive
+
+`settlement` uses the same maintained RFC9474 SHA384/PSS/randomized suite with
+required `outcome-deposit-v1` purpose, distinct context/message domains and a
+fresh anonymous Ed25519 possession key bound to one canonical Deposit digest.
+The independently authenticated common descriptor and verifier incarnation are
+never supplied by the anonymous proof. `RatePermit` has a private constructor;
+it establishes only real blind-signature and request-possession verification.
+It is not a native Deposit proof, admission decision, quota receipt or durable
+settlement. Retrying a token preserves its replay identity. The accounting owner
+must verify the real Deposit, enforce authenticated issuance quotas, consumption
+and exact epoch boundaries, and commit effects at the original daily freeze.
+No ledger, queue, receipt schema or publication authority is added here.
+
+A settlement RSA key MUST be different from every room/TLS/other-purpose key.
+Domain labels do not enforce this separation: a blind signer cannot inspect the
+hidden message purpose. The trusted accounting host must enforce dedicated key
+provisioning and a strict durable anchor containing the common purpose, scope,
+epoch, window, public key and quota before it exposes a signature. Native
+`settlement::issuer::Issuer::from_pkcs1_der` accepts only an original provisioned
+RSA-3072 key matching the supplied descriptor. It has no private-key export,
+serializer, generated replacement key or budget reset. This primitive cannot
+establish the host's anchor or enforce its quota.
+
+After restart, resume issuance only with the SAME original provisioned key and
+SAME retained quota/replay anchor. Losing that key makes new issuance unavailable
+for that epoch; never recreate the allowance or replace the descriptor silently.
+Previously issued tokens still verify using the original authenticated public
+key until its exclusive deadline. A replacement key fails their verification.
+After the deadline, an unobserved token refuses; the primitive does not invent
+historical acceptance or availability guarantees for a volatile queue. Domain
+leaf custody is transient; provisioned key storage remains with its original
+host owner. No raw key getter, KDF or proof journal is introduced.
+
+Real portable blind-signature/possession round trips and native provisioned-key
+restore, tamper, dedicated-key cross-use and expiry vectors are authored. They
+have not executed. No native proof, daily atomic freeze or full account journey
+qualification follows from the primitive tests.

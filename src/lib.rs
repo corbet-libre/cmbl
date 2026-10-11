@@ -1,7 +1,9 @@
 //! Blind expiring room ordering. Proof construction remains an explicit gate.
 #![forbid(unsafe_code)]
 
+mod blind;
 pub mod passes;
+pub mod settlement;
 
 use cmmr::{Deadline, Record, Revision, Store, Write};
 use serde::{Deserialize, Serialize};
