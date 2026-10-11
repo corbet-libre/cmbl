@@ -48,6 +48,28 @@ pub struct Request {
     pub action: Action,
 }
 
+/// Verified portal role of the caller, decided by the host from the caller's
+/// current role gate. The room owner trusts only this verdict, never a claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortalRole {
+    /// Admin gate of exactly this community (the admin portal).
+    Admin { community: String },
+    /// Root gate (the root portal); every community's rooms.
+    Root,
+}
+pub trait PortalGate {
+    /// `None` when the caller holds neither gate in a verified, current way.
+    fn role(&self) -> Option<PortalRole>;
+}
+
+/// Aggregate volume of one room, never per member, never a history: it is the
+/// running total the ephemeral room already holds and disappears with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Traffic {
+    pub room: Id,
+    pub traffic_bytes: u64,
+}
+
 /// Only a reviewed proof adapter may create this capability. It is deliberately
 /// not deserializable and has no public constructor. Missing adapters cannot
 /// manufacture successful authorization by returning an asserted counter.
@@ -121,8 +143,9 @@ pub struct Outcome {
     /// incomparable; members must reconcile the authenticated MLS group state.
     pub ordering: Id,
     pub counter: u64,
+    /// "Here now" indicator. Traffic volume is never part of what members
+    /// receive; see [`Assembly::traffic`].
     pub active_connections: usize,
-    pub traffic_bytes: u64,
     pub through: u64,
     pub gap: bool,
     pub frames: Vec<RelayFrame>,
@@ -134,7 +157,6 @@ struct OperationReceipt {
     expires: u64,
     counter: u64,
     connections: usize,
-    volume: u64,
     through: u64,
 }
 impl OperationReceipt {
@@ -143,7 +165,6 @@ impl OperationReceipt {
             ordering,
             counter: self.counter,
             active_connections: self.connections,
-            traffic_bytes: self.volume,
             through: self.through,
             gap: false,
             frames: vec![],
@@ -198,6 +219,38 @@ impl<S: Store> Assembly<S> {
             return Err(Error::Refused);
         }
         self.apply(request, permit, now).await
+    }
+
+    /// Room traffic for the admin portal (own community) or root portal. This is
+    /// the only route that reveals `traffic_bytes`; members get `Outcome`, which
+    /// has no such field. An absent or expired room has no total.
+    pub async fn traffic(
+        &self,
+        room: &Id,
+        gate: &dyn PortalGate,
+        now: u64,
+    ) -> Result<Option<Traffic>> {
+        match gate.role() {
+            Some(PortalRole::Root) => {}
+            Some(PortalRole::Admin { community }) if community == self.community => {}
+            _ => return Err(Error::Refused),
+        }
+        let Some(record) = self
+            .store
+            .get(&hex(room))
+            .await
+            .map_err(|_| Error::Storage)?
+        else {
+            return Ok(None);
+        };
+        let room_state: Room = postcard::from_bytes(&record.value).map_err(|_| Error::Storage)?;
+        if room_state.connections.values().all(|until| *until <= now) {
+            return Ok(None);
+        }
+        Ok(Some(Traffic {
+            room: *room,
+            traffic_bytes: room_state.volume,
+        }))
     }
 
     async fn apply(&self, request: &Request, permit: Permit, now: u64) -> Result<Outcome> {
@@ -344,7 +397,6 @@ impl<S: Store> Assembly<S> {
                 expires: permit.valid_until,
                 counter: result.counter,
                 connections: result.active_connections,
-                volume: result.traffic_bytes,
                 through: result.through,
             },
         );
@@ -419,7 +471,6 @@ fn outcome(room: &Room) -> Outcome {
         ordering: room.ordering,
         counter: room.counter,
         active_connections: room.connections.len(),
-        traffic_bytes: room.volume,
         through: room.sequence,
         gap: false,
         frames: vec![],

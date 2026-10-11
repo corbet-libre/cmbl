@@ -2,13 +2,20 @@
 //! Pure-Rust private RSA below is a test issuer only. Production uses OpenSSL.
 use blind_rsa_signatures::{DefaultRng, KeyPair, PSS, Randomized, Sha384};
 use cmbl::{
-    Action, Assembly, Error, Limits, ProofVerifier, Request,
+    Action, Assembly, Error, Limits, PortalGate, PortalRole, ProofVerifier, Request,
     passes::{Epoch, PreparedPass, Verifier},
 };
 use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+struct Gate(Option<PortalRole>);
+impl PortalGate for Gate {
+    fn role(&self) -> Option<PortalRole> {
+        self.0.clone()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Time;
@@ -108,7 +115,17 @@ fn actual_blind_pass_binds_room_connection_request_epoch_and_restart() {
             .unwrap();
         assert_eq!(result.counter, 1);
         assert_eq!(result.ordering, first.ordering);
-        assert_eq!(result.traffic_bytes, 3);
+        // Members never receive the volume: it is not part of their outcome.
+        assert!(!serde_json::to_string(&result).unwrap().contains("traffic"));
+        let root = Gate(Some(PortalRole::Root));
+        assert_eq!(
+            a.traffic(&[1; 16], &root, 100)
+                .await
+                .unwrap()
+                .unwrap()
+                .traffic_bytes,
+            3
+        );
         let mut changed = order.clone();
         changed.operation = [4; 16];
         assert!(verifier.verify(&order_proof, &changed, 100).is_err());
@@ -185,18 +202,39 @@ fn actual_blind_pass_binds_room_connection_request_epoch_and_restart() {
             .active_connections,
             2
         );
+        a.execute(
+            &relay,
+            &other.prove(&relay, "boot", 100).unwrap(),
+            &verifier,
+            100,
+        )
+        .await
+        .unwrap();
+        let admin = Gate(Some(PortalRole::Admin {
+            community: "test".into(),
+        }));
         assert_eq!(
-            a.execute(
-                &relay,
-                &other.prove(&relay, "boot", 100).unwrap(),
-                &verifier,
-                100
-            )
-            .await
-            .unwrap()
-            .traffic_bytes,
+            a.traffic(&[1; 16], &admin, 100)
+                .await
+                .unwrap()
+                .unwrap()
+                .traffic_bytes,
             4
         );
+        for refused in [
+            Gate(None),
+            Gate(Some(PortalRole::Admin {
+                community: "other".into(),
+            })),
+        ] {
+            assert_eq!(
+                a.traffic(&[1; 16], &refused, 100).await,
+                Err(Error::Refused)
+            );
+        }
+        // No room, or a room whose connections have all lapsed, has no total.
+        assert_eq!(a.traffic(&[9; 16], &admin, 100).await, Ok(None));
+        assert_eq!(a.traffic(&[1; 16], &admin, 100_000).await, Ok(None));
 
         let restarted = assembly()
             .execute(&resume, &proof, &verifier, 100)

@@ -78,6 +78,13 @@ impl ProofVerifier for Preconditions {
         })
     }
 }
+struct Gate(Option<PortalRole>);
+impl PortalGate for Gate {
+    fn role(&self) -> Option<PortalRole> {
+        self.0.clone()
+    }
+}
+
 async fn execute<S: Store>(a: &Assembly<S>, r: &Request) -> Result<Outcome> {
     a.execute(r, &[], &Preconditions, 100).await
 }
@@ -109,7 +116,18 @@ fn real_memory_order_replay_expiry_and_restart() {
         );
         let first = execute(&a, &order).await.unwrap();
         assert_eq!(first.counter, 9);
-        assert_eq!(first.traffic_bytes, 3);
+        assert_eq!(
+            a.traffic(&[1; 16], &Gate(Some(PortalRole::Root)), 100)
+                .await
+                .unwrap()
+                .unwrap()
+                .traffic_bytes,
+            3
+        );
+        assert_eq!(
+            a.traffic(&[1; 16], &Gate(None), 100).await,
+            Err(Error::Refused)
+        );
         assert_eq!(execute(&a, &order).await.unwrap(), first);
         let conflict = request(
             3,
