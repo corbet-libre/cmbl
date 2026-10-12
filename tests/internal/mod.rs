@@ -885,3 +885,162 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "valkey-conformance"))]
 mod valkey;
+
+fn listing_assembly() -> Assembly<Arc<cmmr::Memory<Time>>> {
+    let time = Time(Arc::new(AtomicU64::new(100)));
+    let memory = Arc::new(
+        cmmr::Memory::new(
+            cmmr::Scope::new("test", "boot").unwrap(),
+            cmmr::Limits {
+                records: 20,
+                value_bytes: 100_000,
+                batch: 10,
+                indexes_per_record: 1,
+                page: 10,
+                ttl_ms: 10_000,
+            },
+            time,
+        )
+        .unwrap(),
+    );
+    Assembly::new(
+        memory,
+        "test".into(),
+        "boot".into(),
+        Limits {
+            connections: 2,
+            relay_messages: 2,
+            message_bytes: 100,
+            lifetime_ms: 1_000,
+            proof_bytes: 1_000,
+            operation_receipts: 32,
+        },
+    )
+    .unwrap()
+}
+fn listing_key(seed: u8) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+}
+fn listing_entry(
+    key: &ed25519_dalek::SigningKey,
+    counter: u64,
+    withdrawn: bool,
+) -> listing::SignedEntry {
+    listing::SignedEntry::sign(
+        listing::Entry {
+            key: key.verifying_key().to_bytes(),
+            name: "Chess".into(),
+            description: "Friendly games".into(),
+            counter,
+            expires_ms: 5_000,
+            withdrawn,
+        },
+        key,
+    )
+    .unwrap()
+}
+fn listing_request(
+    op: u8,
+    key: &ed25519_dalek::SigningKey,
+    entry: listing::SignedEntry,
+) -> Request {
+    Request {
+        room: listing::room_id(&key.verifying_key().to_bytes()),
+        operation: [op; 16],
+        action: Action::Publish { entry },
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn listing_is_signed_by_the_room_key_live_only_and_never_shows_traffic() {
+    futures::executor::block_on(async {
+        let a = listing_assembly();
+        let key = listing_key(7);
+        let room = listing::room_id(&key.verifying_key().to_bytes());
+        let publish = |op: u8, entry| listing_request(op, &key, entry);
+        // No live room yet: a pass holder cannot list a room that is not there.
+        assert_eq!(
+            execute(&a, &publish(1, listing_entry(&key, 1, false))).await,
+            Err(Error::Refused)
+        );
+        let resume = Request {
+            room,
+            operation: [2; 16],
+            action: Action::Resume {
+                connection: [1; 16],
+            },
+        };
+        execute(&a, &resume).await.unwrap();
+        let outcome = execute(&a, &publish(3, listing_entry(&key, 1, false)))
+            .await
+            .unwrap();
+        assert_eq!(outcome.active_connections, 1);
+        let page = a.list(None, 10, 100).await.unwrap();
+        assert_eq!(
+            page.rooms,
+            vec![listing::Listed {
+                room,
+                name: "Chess".into(),
+                description: "Friendly games".into(),
+                here_now: 1,
+            }]
+        );
+        // The same entry may be refreshed; an older or conflicting one may not replace it.
+        execute(&a, &publish(4, listing_entry(&key, 1, false)))
+            .await
+            .unwrap();
+        let mut other = listing_entry(&key, 2, false);
+        other.entry.name = "Go".into();
+        let other = listing::SignedEntry::sign(other.entry, &key).unwrap();
+        execute(&a, &publish(5, other)).await.unwrap();
+        assert_eq!(a.list(None, 10, 100).await.unwrap().rooms[0].name, "Go");
+        assert_eq!(
+            execute(&a, &publish(6, listing_entry(&key, 1, false))).await,
+            Err(Error::Conflict)
+        );
+        // Another key cannot sign for this room; a forged signature is refused.
+        let intruder = listing_key(8);
+        assert_eq!(
+            execute(&a, &publish(7, listing_entry(&intruder, 9, false))).await,
+            Err(Error::Refused)
+        );
+        let mut forged = listing_entry(&key, 3, false);
+        forged.entry.name = "Other".into();
+        assert_eq!(execute(&a, &publish(8, forged)).await, Err(Error::Refused));
+        // Content bounds.
+        let mut long = listing_entry(&key, 3, false).entry;
+        long.name = "x".repeat(listing::NAME_BYTES + 1);
+        let long = listing::SignedEntry::sign(long, &key).unwrap();
+        assert_eq!(execute(&a, &publish(9, long)).await, Err(Error::Invalid));
+        let mut stale = listing_entry(&key, 3, false).entry;
+        stale.expires_ms = 100;
+        let stale = listing::SignedEntry::sign(stale, &key).unwrap();
+        assert_eq!(execute(&a, &publish(10, stale)).await, Err(Error::Invalid));
+        // A signed tombstone withdraws it and an older entry cannot revive it.
+        execute(&a, &publish(11, listing_entry(&key, 3, true)))
+            .await
+            .unwrap();
+        assert!(a.list(None, 10, 100).await.unwrap().rooms.is_empty());
+        assert_eq!(
+            execute(&a, &publish(12, listing_entry(&key, 2, false))).await,
+            Err(Error::Conflict)
+        );
+        execute(&a, &publish(13, listing_entry(&key, 4, false)))
+            .await
+            .unwrap();
+        assert_eq!(a.list(None, 10, 100).await.unwrap().rooms.len(), 1);
+        // The listing ends with the room's last connection.
+        let leave = Request {
+            room,
+            operation: [14; 16],
+            action: Action::Disconnect {
+                connection: [1; 16],
+            },
+        };
+        execute(&a, &leave).await.unwrap();
+        assert!(a.list(None, 10, 100).await.unwrap().rooms.is_empty());
+        assert_eq!(a.list(None, 0, 100).await.unwrap_err(), Error::Invalid);
+        assert!(a.with_listing_ttl(0).is_err());
+    });
+}

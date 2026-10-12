@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod blind;
+pub mod listing;
 pub mod passes;
 pub mod settlement;
 
@@ -32,13 +33,32 @@ pub enum Error {
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Action {
-    Resume { connection: Id },
-    Connect { connection: Id },
-    Renew { connection: Id },
-    Disconnect { connection: Id },
-    Order { expected: u64, ciphertext: Vec<u8> },
-    Relay { ciphertext: Vec<u8> },
-    Read { after: u64 },
+    Resume {
+        connection: Id,
+    },
+    Connect {
+        connection: Id,
+    },
+    Renew {
+        connection: Id,
+    },
+    Disconnect {
+        connection: Id,
+    },
+    Order {
+        expected: u64,
+        ciphertext: Vec<u8>,
+    },
+    Relay {
+        ciphertext: Vec<u8>,
+    },
+    Read {
+        after: u64,
+    },
+    /// Publish, refresh, replace or withdraw this room's listing entry.
+    Publish {
+        entry: listing::SignedEntry,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -177,6 +197,7 @@ pub struct Assembly<S> {
     community: String,
     incarnation: String,
     limits: Limits,
+    listing_ttl_ms: u64,
 }
 
 impl<S: Store> Assembly<S> {
@@ -196,7 +217,17 @@ impl<S: Store> Assembly<S> {
             community,
             incarnation,
             limits,
+            listing_ttl_ms: listing::DEFAULT_TTL_MS,
         })
+    }
+
+    /// How long a published entry stays listed without a refresh.
+    pub fn with_listing_ttl(mut self, milliseconds: u64) -> Result<Self> {
+        if milliseconds == 0 {
+            return Err(Error::Invalid);
+        }
+        self.listing_ttl_ms = milliseconds;
+        Ok(self)
     }
 
     pub async fn execute(
@@ -217,6 +248,9 @@ impl<S: Store> Assembly<S> {
             || permit.valid_until <= now
         {
             return Err(Error::Refused);
+        }
+        if let Action::Publish { entry } = &request.action {
+            return self.publish(request, &permit, entry, now).await;
         }
         self.apply(request, permit, now).await
     }
