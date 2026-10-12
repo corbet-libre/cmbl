@@ -43,6 +43,7 @@ pub struct Listed {
     pub here_now: usize,
 }
 
+#[derive(Debug)]
 pub struct ListPage {
     pub rooms: Vec<Listed>,
     pub next: Option<cmmr::Cursor>,
