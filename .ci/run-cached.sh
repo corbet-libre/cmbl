@@ -6,8 +6,8 @@ exec 2>&1
 : "${CI_COMMIT_SHA:?Missing verified source revision}"
 : "${CI_REPOSITORY_URL:?Missing canonical repository identity}"
 : "${CHECKS:?Missing declared check selection}"
-if [ "$CHECKS" != "verify,advisories" ]; then
-  echo "CHECKS must be exactly 'verify,advisories', got: $CHECKS" >&2
+if [ "$CHECKS" != "verify,advisories" ] && [ "$CHECKS" != "resolve-dependencies" ]; then
+  echo "CHECKS must be exactly 'verify,advisories' or 'resolve-dependencies', got: $CHECKS" >&2
   exit 2
 fi
 test -f Cargo.lock || { echo 'Cargo.lock must be present (committed snapshot)' >&2; exit 2; }
@@ -74,6 +74,9 @@ valkey-server --version
 valkey-cli --version
 rustup run nightly rustc -vV
 rustup run nightly cargo llvm-cov --version
+if [ "$CHECKS" = "resolve-dependencies" ]; then
+  exec "$CCID_BIN" check --repo "$PWD" --check "$CHECKS"
+fi
 "$CCID_BIN" cached --repo "$PWD" --check verify
 test -s ".ccid/results/verify.jsonl"
 "$CCID_BIN" check --repo "$PWD" --check advisories
