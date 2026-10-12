@@ -379,6 +379,8 @@ impl<S: Store> Assembly<S> {
                 return Ok(result);
             }
             Action::Resume { .. } => {}
+            // Listing entries are handled before the room state machine.
+            Action::Publish { .. } => return Err(Error::Invalid),
             Action::Connect { connection } => {
                 if room.connections.contains_key(connection) {
                     return Err(Error::Conflict);
