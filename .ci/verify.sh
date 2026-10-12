@@ -118,7 +118,13 @@ with open('webdriver.json', 'w') as output:
 PYTHON
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --target wasm32-unknown-unknown --tests
 rustup run nightly rustc --version
+NIGHTLY_RUSTC="$(rustup which --toolchain nightly rustc)"
 NIGHTLY_CARGO="$(rustup which --toolchain nightly cargo)"
+NIGHTLY_BIN="$(dirname "$NIGHTLY_RUSTC")"
+export RUSTC="$NIGHTLY_RUSTC"
+export CARGO="$NIGHTLY_CARGO"
+export PATH="$NIGHTLY_BIN:$PATH"
+export RUSTUP_TOOLCHAIN=nightly
 "$NIGHTLY_CARGO" llvm-cov --version
 "$NIGHTLY_CARGO" llvm-cov --locked --branch --json --output-path coverage.json --ignore-filename-regex '/tests/'
 python3 .github/check-coverage.py coverage.json
