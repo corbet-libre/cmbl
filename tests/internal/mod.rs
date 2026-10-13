@@ -12,6 +12,9 @@ impl cmmr::Clock for Time {
     }
 }
 fn setup() -> (Assembly<InterleavedStore>, Time) {
+    setup_with(2)
+}
+fn setup_with(relay_messages: usize) -> (Assembly<InterleavedStore>, Time) {
     let time = Time(Arc::new(AtomicU64::new(100)));
     let memory = Arc::new(
         cmmr::Memory::new(
@@ -38,7 +41,7 @@ fn setup() -> (Assembly<InterleavedStore>, Time) {
             "boot".into(),
             Limits {
                 connections: 2,
-                relay_messages: 2,
+                relay_messages,
                 message_bytes: 100,
                 lifetime_ms: 1_000,
                 proof_bytes: 1_000,
@@ -91,48 +94,50 @@ async fn execute<S: Store>(a: &Assembly<S>, r: &Request) -> Result<Outcome> {
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
-fn room_state_keeps_only_the_latest_frame_of_its_kind() {
+fn a_join_request_is_answered_only_while_live_and_a_bounded_number_of_times() {
     futures::executor::block_on(async {
-        let (a, _) = setup();
-        execute(
-            &a,
-            &request(
-                1,
-                Action::Resume {
-                    connection: [1; 16],
-                },
-            ),
-        )
-        .await
-        .unwrap();
-        let relay = |n, byte, kind| {
+        let (a, _) = setup_with(8);
+        let resume = Action::Resume {
+            connection: [1; 16],
+        };
+        execute(&a, &request(1, resume)).await.unwrap();
+        let relay = |n, bytes: Vec<u8>, kind| {
             request(
                 n,
                 Action::Relay {
-                    ciphertext: vec![byte; 4],
+                    ciphertext: bytes,
                     kind,
                 },
             )
         };
-        execute(&a, &relay(2, 1, FrameKind::RoomState))
-            .await
-            .unwrap();
-        execute(&a, &relay(3, 2, FrameKind::Message)).await.unwrap();
-        execute(&a, &relay(4, 3, FrameKind::RoomState))
-            .await
-            .unwrap();
-        let read = execute(&a, &request(5, Action::Read { after: 0 }))
-            .await
-            .unwrap();
-        let kinds: Vec<_> = read
-            .frames
-            .iter()
-            .map(|f| (f.kind, f.ciphertext[0]))
-            .collect();
-        // The old state is gone, the message stays, the latest state is kept.
+        // The request carries exactly one ephemeral key.
         assert_eq!(
-            kinds,
-            vec![(FrameKind::Message, 2), (FrameKind::RoomState, 3)]
+            execute(&a, &relay(2, vec![7; 31], FrameKind::JoinRequest)).await,
+            Err(Error::Invalid)
+        );
+        // Nothing to answer yet.
+        let answer = |n, to| relay(n, vec![9; 40], FrameKind::RoomState { to });
+        assert_eq!(execute(&a, &answer(3, 1)).await, Err(Error::Invalid));
+        let posted = execute(&a, &relay(4, vec![7; 32], FrameKind::JoinRequest))
+            .await
+            .unwrap();
+        let to = posted.through;
+        // A message sequence is not a request.
+        execute(&a, &relay(5, vec![1], FrameKind::Message))
+            .await
+            .unwrap();
+        assert_eq!(execute(&a, &answer(6, to + 1)).await, Err(Error::Invalid));
+        for n in 0..JOIN_ANSWERS as u8 {
+            execute(&a, &answer(10 + n, to)).await.unwrap();
+        }
+        assert_eq!(execute(&a, &answer(20, to)).await, Err(Error::Capacity));
+        let read = execute(&a, &request(21, Action::Read { after: 0 }))
+            .await
+            .unwrap();
+        assert!(
+            read.frames
+                .iter()
+                .any(|f| f.kind == FrameKind::RoomState { to } && f.ciphertext.len() == 40)
         );
     });
 }

@@ -31,18 +31,30 @@ pub enum Error {
     Storage,
 }
 
-/// What a relayed frame carries. cmbl never reads the bytes; the kind only
-/// decides retention.
+/// Bytes of an ephemeral X25519 HPKE public key.
+pub const JOIN_KEY_BYTES: usize = 32;
+/// Answers one join request may collect before further ones are refused.
+pub const JOIN_ANSWERS: usize = 4;
+
+/// What a relayed frame carries. cmbl reads none of it beyond its shape.
+///
+/// Joining is request and response, never a published state: a newcomer holding
+/// a valid room pass posts a `JoinRequest` (its ephemeral HPKE public key; the
+/// pass check on the Relay request is the spam defence) and any online member
+/// answers with a `RoomState` frame sealed to that key (GroupInfo, ratchet tree
+/// and parent evidence). The room sees the pass check and ciphertext only, and
+/// nothing is retained in the clear. With no member online the request simply
+/// expires unanswered and the newcomer retries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum FrameKind {
-    /// Member traffic: retained in order until it expires.
+    /// Member traffic.
     Message,
-    /// `room_state`: the MLS GroupInfo and parent evidence the member that
-    /// committed an epoch publishes for newcomers. Only the latest one is kept
-    /// (a new one replaces the old), and it is read like any frame with a valid
-    /// room pass. A pass holder can at worst replace it with bytes a joiner then
-    /// fails to verify; the GroupInfo carries its own member signature.
-    RoomState,
+    /// `room_join_request`: the ciphertext is exactly [`JOIN_KEY_BYTES`] bytes,
+    /// the newcomer's ephemeral public key.
+    JoinRequest,
+    /// `room_state`: sealed answer to the live `JoinRequest` with relay
+    /// sequence `to`.
+    RoomState { to: u64 },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -440,11 +452,27 @@ impl<S: Store> Assembly<S> {
                 self.append(&mut room, ciphertext, FrameKind::Message, deadline)?;
             }
             Action::Relay { ciphertext, kind } => {
-                if *kind == FrameKind::RoomState {
-                    // Only the latest state is retained; the old one goes first so a
-                    // full relay still accepts it.
-                    room.frames
-                        .retain(|frame| frame.kind != FrameKind::RoomState);
+                match kind {
+                    FrameKind::Message => {}
+                    FrameKind::JoinRequest => {
+                        if ciphertext.len() != JOIN_KEY_BYTES {
+                            return Err(Error::Invalid);
+                        }
+                    }
+                    FrameKind::RoomState { to } => {
+                        // Only a live request can be answered, a bounded number of times.
+                        if !room
+                            .frames
+                            .iter()
+                            .any(|f| f.sequence == *to && f.kind == FrameKind::JoinRequest)
+                        {
+                            return Err(Error::Invalid);
+                        }
+                        let answers = room.frames.iter().filter(|f| f.kind == *kind).count();
+                        if answers >= JOIN_ANSWERS {
+                            return Err(Error::Capacity);
+                        }
+                    }
                 }
                 self.append(&mut room, ciphertext, *kind, deadline)?;
             }
