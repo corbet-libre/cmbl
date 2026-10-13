@@ -71,8 +71,8 @@ jobs:
         with:
           name: formatting
           path: rustfmt.patch
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets --features issuer -- -D warnings
+      - run: cargo test --locked --features issuer
       - name: Real volatile Valkey configuration
         run: |
           docker exec ${{ job.services.valkey.id }} valkey-cli CONFIG SET save ""
@@ -102,6 +102,8 @@ jobs:
       - name: Run device vectors in wasm
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          WASM_BINDGEN_USE_BROWSER: '1'
+          WASM_BINDGEN_TEST_TIMEOUT: '180'
         run: cargo test --locked --target wasm32-unknown-unknown --tests
   dependency-policy:
     needs: resolve
@@ -141,7 +143,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - run: cargo llvm-cov --locked --branch --json --output-path coverage.json --ignore-filename-regex '/tests/'
+      - run: cargo llvm-cov --locked --features issuer --branch --json --output-path coverage.json --ignore-filename-regex '/tests/'
       - run: python3 .github/check-coverage.py coverage.json
       - uses: actions/upload-artifact@v7
         if: always()

@@ -6,8 +6,8 @@ exec 2>&1
 : "${CI_COMMIT_SHA:?Missing verified source revision}"
 : "${CI_REPOSITORY_URL:?Missing canonical repository identity}"
 : "${CHECKS:?Missing declared check selection}"
-if [ "$CHECKS" != "verify,advisories" ]; then
-  echo "CHECKS must be exactly 'verify,advisories', got: $CHECKS" >&2
+if [ "$CHECKS" != "verify,advisories" ] && [ "$CHECKS" != "resolve-dependencies" ]; then
+  echo "CHECKS must be exactly 'verify,advisories' or 'resolve-dependencies', got: $CHECKS" >&2
   exit 2
 fi
 test -f Cargo.lock || { echo 'Cargo.lock must be present (committed snapshot)' >&2; exit 2; }
@@ -22,8 +22,10 @@ exec 9>"$state/lock"
 flock -w "${CI_TIMEOUT:-2700}" 9
 mkdir -p "$state/moon-cache/hashes" "$state/moon-cache/outputs" "$state/moon-home"
 mkdir -p .moon/cache
+ln -sfn "$state/moon-cache/hashes" .moon/cache/hashes
+ln -sfn "$state/moon-cache/outputs" .moon/cache/outputs
 tool_source=github:NixOS/nixpkgs/b7c2ada94fe99c15b0dbcf4d11fd7850b957a436
-tool_paths=$(nix build --no-link --print-out-paths "$tool_source#moon" "$tool_source#proto" "$tool_source#python3" "$tool_source#jq" "$tool_source#curl" "$tool_source#valkey" "$tool_source#cargo-llvm-cov" "$tool_source#cargo-deny")
+tool_paths=$(nix build --no-link --print-out-paths "$tool_source#moon" "$tool_source#proto" "$tool_source#python3" "$tool_source#jq" "$tool_source#curl" "$tool_source#valkey" "$tool_source#cargo-llvm-cov" "$tool_source#chromedriver" "$tool_source#chromium")
 for path in $tool_paths; do PATH="$path/bin:$PATH"; done
 export PROTO_HOME="$toolchains/proto" RUSTUP_HOME="$toolchains/rustup"
 export CARGO_HOME="$toolchains/cargo" MOON_HOME="$state/moon-home"
@@ -68,22 +70,17 @@ cargo --version
 python3 --version
 jq --version
 curl --version
-cargo-deny --version
 valkey-server --version
 valkey-cli --version
+export CHROMEDRIVER="${CHROMEDRIVER:-$(command -v chromedriver)}"
+export CHROME_BIN="${CHROME_BIN:-$(command -v chromium)}"
+test -x "$CHROMEDRIVER" || { echo "nix chromedriver not executable at $CHROMEDRIVER" >&2; exit 2; }
+test -x "$CHROME_BIN" || { echo "nix chromium not executable at $CHROME_BIN" >&2; exit 2; }
 rustup run nightly rustc -vV
 rustup run nightly cargo llvm-cov --version
+if [ "$CHECKS" = "resolve-dependencies" ]; then
+  exec "$CCID_BIN" check --repo "$PWD" --check "$CHECKS"
+fi
 "$CCID_BIN" cached --repo "$PWD" --check verify
 test -s ".ccid/results/verify.jsonl"
-# Surface the exact `cargo deny` report: run the fresh advisories check with
-# stdout+stderr captured to a job-local file, print it, and preserve the
-# original exit code (gate unchanged, no advisories disabled).
-advisories_log="$(mktemp)"
-if "$CCID_BIN" check --repo "$PWD" --check advisories >"$advisories_log" 2>&1; then
-  advisories_rc=0
-else
-  advisories_rc=$?
-fi
-cat "$advisories_log"
-rm -f "$advisories_log"
-exit "$advisories_rc"
+"$CCID_BIN" check --repo "$PWD" --check advisories

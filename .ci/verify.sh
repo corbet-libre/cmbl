@@ -106,6 +106,16 @@ base="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}"
 mkdir -p "$RUNNER_TEMP/wasm-runner"
 (cd "$RUNNER_TEMP/wasm-runner" && curl --fail --location --retry 3 --remote-name "$base/$archive" && curl --fail --location --retry 3 --remote-name "$base/$archive.sha256sum" && checksum=$(cut -d ' ' -f1 "$archive.sha256sum") && printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check && tar -xzf "$archive" --strip-components=1)
 export PATH="$RUNNER_TEMP/wasm-runner:$PATH"
+# The runner supplies pinned nix chromium and chromedriver; link the browser
+# under the name the stock discovery expects, job-locally.
+mkdir -p "$RUNNER_TEMP/bin"
+ln -sf "$CHROME_BIN" "$RUNNER_TEMP/bin/google-chrome"
+export PATH="$RUNNER_TEMP/bin:$PATH"
+python3 - <<'PYTHON'
+import json, os
+with open('webdriver.json', 'w') as output:
+    json.dump({'goog:chromeOptions': {'binary': os.environ['CHROME_BIN']}}, output)
+PYTHON
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --target wasm32-unknown-unknown --tests
 rustup run nightly rustc --version
 NIGHTLY_RUSTC="$(rustup which --toolchain nightly rustc)"
@@ -116,15 +126,5 @@ export CARGO="$NIGHTLY_CARGO"
 export PATH="$NIGHTLY_BIN:$PATH"
 export RUSTUP_TOOLCHAIN=nightly
 "$NIGHTLY_CARGO" llvm-cov --version
-# Bug 2 isolation: coverage data must not reuse the shared cargo target
-# across jobs (stale checkout paths fail the next gate); scope the
-# coverage target to this job only. Native gates keep the shared warm
-# target; outer traps and services are untouched.
-(
-coverage_target="$(mktemp -d)"
-case "$coverage_target" in ""|"$PWD"/*) echo 'unsafe coverage target' >&2; exit 2;; esac
-trap 'rm -rf -- "$coverage_target"' EXIT
-export CARGO_TARGET_DIR="$coverage_target"
 "$NIGHTLY_CARGO" llvm-cov --locked --branch --json --output-path coverage.json --ignore-filename-regex '/tests/'
-)
 python3 .github/check-coverage.py coverage.json
