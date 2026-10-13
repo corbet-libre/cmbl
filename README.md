@@ -1,11 +1,11 @@
 # cmbl — Assembly
 
-Implementation in progress. No production success is available without the
-required verified lower-layer capabilities.
+Admission-pass candidate in progress, uncompiled and unqualified. No live room
+or authenticated issuance endpoint acceptance is claimed.
 
 ## Scope
 
-Blind volatile ordering and bounded encrypted relay for public rooms. Store opaque room IDs, ordering counters, expiring connection handles and ciphertext only. No member identity, attendance link, roster, MLS tree, profile or content. Anonymous permits and restart/handover proof verification must be independently reviewed; missing proof support refuses operations.
+Blind volatile ordering and bounded encrypted relay for public rooms. Store opaque room IDs, ordering counters, expiring connection handles and ciphertext only. No member identity, attendance link, roster, MLS tree, profile or content. Admission-only RFC9474 passes hide rooms during issuance. Members enforce MLS membership, counter and fork size; Assembly only orders and relays. No Wave or ledger debit for joining.
 
 ## Validation
 

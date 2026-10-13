@@ -27,6 +27,13 @@ impl ProofVerifier for PermitPrecondition {
             community: "test".into(),
             request: digest(r)?,
             valid_until: self.until,
+            connection: match r.action {
+                Action::Resume { connection }
+                | Action::Connect { connection }
+                | Action::Renew { connection }
+                | Action::Disconnect { connection } => connection,
+                _ => [1; 16],
+            },
             resume_counter: Some(8),
         })
     }
@@ -79,6 +86,7 @@ async fn parity<S: Store>(a: Assembly<S>) {
         2,
         Action::Relay {
             ciphertext: vec![7],
+            kind: FrameKind::Message,
         },
     );
     let original = a.execute(&relay, &[], &proofs, now()).await.unwrap();
@@ -104,7 +112,8 @@ async fn parity<S: Store>(a: Assembly<S>) {
             &request(
                 2,
                 Action::Relay {
-                    ciphertext: vec![8]
+                    ciphertext: vec![8],
+                    kind: FrameKind::Message
                 }
             ),
             &[],
@@ -121,6 +130,7 @@ async fn parity<S: Store>(a: Assembly<S>) {
             4,
             Action::Relay {
                 ciphertext: vec![9],
+                kind: FrameKind::Message,
             },
         ),
         &[],

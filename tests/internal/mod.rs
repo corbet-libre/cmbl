@@ -12,6 +12,9 @@ impl cmmr::Clock for Time {
     }
 }
 fn setup() -> (Assembly<InterleavedStore>, Time) {
+    setup_with(2)
+}
+fn setup_with(relay_messages: usize) -> (Assembly<InterleavedStore>, Time) {
     let time = Time(Arc::new(AtomicU64::new(100)));
     let memory = Arc::new(
         cmmr::Memory::new(
@@ -38,7 +41,7 @@ fn setup() -> (Assembly<InterleavedStore>, Time) {
             "boot".into(),
             Limits {
                 connections: 2,
-                relay_messages: 2,
+                relay_messages,
                 message_bytes: 100,
                 lifetime_ms: 1_000,
                 proof_bytes: 1_000,
@@ -67,12 +70,76 @@ impl ProofVerifier for Preconditions {
             community: "test".into(),
             request: digest(r)?,
             valid_until: 5_000,
+            connection: match r.action {
+                Action::Resume { connection }
+                | Action::Connect { connection }
+                | Action::Renew { connection }
+                | Action::Disconnect { connection } => connection,
+                _ => [1; 16],
+            },
             resume_counter: Some(8),
         })
     }
 }
+struct Gate(Option<PortalRole>);
+impl PortalGate for Gate {
+    fn role(&self) -> Option<PortalRole> {
+        self.0.clone()
+    }
+}
+
 async fn execute<S: Store>(a: &Assembly<S>, r: &Request) -> Result<Outcome> {
     a.execute(r, &[], &Preconditions, 100).await
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn a_join_request_is_answered_only_while_live_and_a_bounded_number_of_times() {
+    futures::executor::block_on(async {
+        let (a, _) = setup_with(8);
+        let resume = Action::Resume {
+            connection: [1; 16],
+        };
+        execute(&a, &request(1, resume)).await.unwrap();
+        let relay = |n, bytes: Vec<u8>, kind| {
+            request(
+                n,
+                Action::Relay {
+                    ciphertext: bytes,
+                    kind,
+                },
+            )
+        };
+        // The request carries exactly one ephemeral key.
+        assert_eq!(
+            execute(&a, &relay(2, vec![7; 31], FrameKind::JoinRequest)).await,
+            Err(Error::Invalid)
+        );
+        // Nothing to answer yet.
+        let answer = |n, to| relay(n, vec![9; 40], FrameKind::RoomState { to });
+        assert_eq!(execute(&a, &answer(3, 1)).await, Err(Error::Invalid));
+        let posted = execute(&a, &relay(4, vec![7; 32], FrameKind::JoinRequest))
+            .await
+            .unwrap();
+        let to = posted.through;
+        // A message sequence is not a request.
+        execute(&a, &relay(5, vec![1], FrameKind::Message))
+            .await
+            .unwrap();
+        assert_eq!(execute(&a, &answer(6, to + 1)).await, Err(Error::Invalid));
+        for n in 0..JOIN_ANSWERS as u8 {
+            execute(&a, &answer(10 + n, to)).await.unwrap();
+        }
+        assert_eq!(execute(&a, &answer(20, to)).await, Err(Error::Capacity));
+        let read = execute(&a, &request(21, Action::Read { after: 0 }))
+            .await
+            .unwrap();
+        assert!(
+            read.frames
+                .iter()
+                .any(|f| f.kind == FrameKind::RoomState { to } && f.ciphertext.len() == 40)
+        );
+    });
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -102,7 +169,18 @@ fn real_memory_order_replay_expiry_and_restart() {
         );
         let first = execute(&a, &order).await.unwrap();
         assert_eq!(first.counter, 9);
-        assert_eq!(first.traffic_bytes, 3);
+        assert_eq!(
+            a.traffic(&[1; 16], &Gate(Some(PortalRole::Root)), 100)
+                .await
+                .unwrap()
+                .unwrap()
+                .traffic_bytes,
+            3
+        );
+        assert_eq!(
+            a.traffic(&[1; 16], &Gate(None), 100).await,
+            Err(Error::Refused)
+        );
         assert_eq!(execute(&a, &order).await.unwrap(), first);
         let conflict = request(
             3,
@@ -118,7 +196,8 @@ fn real_memory_order_replay_expiry_and_restart() {
                 &request(
                     2,
                     Action::Relay {
-                        ciphertext: vec![4]
+                        ciphertext: vec![4],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -250,7 +329,17 @@ fn connections_and_bounded_relay() {
         );
         for bytes in [vec![], vec![0; 101]] {
             assert_eq!(
-                execute(&a, &request(4, Action::Relay { ciphertext: bytes })).await,
+                execute(
+                    &a,
+                    &request(
+                        4,
+                        Action::Relay {
+                            ciphertext: bytes,
+                            kind: FrameKind::Message
+                        }
+                    )
+                )
+                .await,
                 Err(Error::Invalid)
             );
         }
@@ -261,6 +350,7 @@ fn connections_and_bounded_relay() {
                     op,
                     Action::Relay {
                         ciphertext: vec![op],
+                        kind: FrameKind::Message,
                     },
                 ),
             )
@@ -273,7 +363,8 @@ fn connections_and_bounded_relay() {
                 &request(
                     6,
                     Action::Relay {
-                        ciphertext: vec![9]
+                        ciphertext: vec![9],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -424,7 +515,8 @@ fn real_storage_refuses_corruption_and_impossible_deadline() {
                 &request(
                     2,
                     Action::Relay {
-                        ciphertext: vec![1]
+                        ciphertext: vec![1],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -452,8 +544,8 @@ impl Store for InterleavedStore {
     async fn get(&self, key: &str) -> std::result::Result<Option<Record>, cmmr::Error> {
         self.memory.get(key).await
     }
-    async fn check_current(&self, checks: &[cmmr::Check]) -> std::result::Result<(), cmmr::Error> {
-        self.memory.check_current(checks).await
+    async fn check_current(&self, batch: &[cmmr::Check]) -> std::result::Result<(), cmmr::Error> {
+        self.memory.check_current(batch).await
     }
     async fn compare_exchange(&self, batch: &[Write]) -> std::result::Result<(), cmmr::Error> {
         if self.race.swap(0, Ordering::SeqCst) == 1 {
@@ -525,6 +617,7 @@ fn real_cas_and_generation_races_do_not_remove_a_new_room() {
             let action = if race == 1 {
                 Action::Relay {
                     ciphertext: vec![3],
+                    kind: FrameKind::Message,
                 }
             } else {
                 Action::Disconnect {
@@ -577,6 +670,7 @@ fn room_scoped_generations_and_frame_expiry() {
                 2,
                 Action::Relay {
                     ciphertext: vec![1],
+                    kind: FrameKind::Message,
                 },
             ),
         )
@@ -660,6 +754,7 @@ fn bounded_reads_report_expiry_gaps_without_attendance_identity() {
                 2,
                 Action::Relay {
                     ciphertext: vec![8],
+                    kind: FrameKind::Message,
                 },
             ),
         )
@@ -732,6 +827,7 @@ fn bounded_reads_report_expiry_gaps_without_attendance_identity() {
                 5,
                 Action::Relay {
                     ciphertext: vec![11],
+                    kind: FrameKind::Message,
                 },
             ),
             &[],
@@ -770,6 +866,7 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
             2,
             Action::Relay {
                 ciphertext: vec![3],
+                kind: FrameKind::Message,
             },
         );
         let first = execute(&a, &relay).await.unwrap();
@@ -791,7 +888,8 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
                 &request(
                     2,
                     Action::Relay {
-                        ciphertext: vec![4]
+                        ciphertext: vec![4],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -804,6 +902,7 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
                 4,
                 Action::Relay {
                     ciphertext: vec![5],
+                    kind: FrameKind::Message,
                 },
             ),
             &[],
@@ -863,3 +962,162 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "valkey-conformance"))]
 mod valkey;
+
+fn listing_assembly() -> Assembly<Arc<cmmr::Memory<Time>>> {
+    let time = Time(Arc::new(AtomicU64::new(100)));
+    let memory = Arc::new(
+        cmmr::Memory::new(
+            cmmr::Scope::new("test", "boot").unwrap(),
+            cmmr::Limits {
+                records: 20,
+                value_bytes: 100_000,
+                batch: 10,
+                indexes_per_record: 1,
+                page: 10,
+                ttl_ms: 10_000,
+            },
+            time,
+        )
+        .unwrap(),
+    );
+    Assembly::new(
+        memory,
+        "test".into(),
+        "boot".into(),
+        Limits {
+            connections: 2,
+            relay_messages: 2,
+            message_bytes: 100,
+            lifetime_ms: 1_000,
+            proof_bytes: 1_000,
+            operation_receipts: 32,
+        },
+    )
+    .unwrap()
+}
+fn listing_key(seed: u8) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+}
+fn listing_entry(
+    key: &ed25519_dalek::SigningKey,
+    counter: u64,
+    withdrawn: bool,
+) -> listing::SignedEntry {
+    listing::SignedEntry::sign(
+        listing::Entry {
+            key: key.verifying_key().to_bytes(),
+            name: "Chess".into(),
+            description: "Friendly games".into(),
+            counter,
+            expires_ms: 5_000,
+            withdrawn,
+        },
+        key,
+    )
+    .unwrap()
+}
+fn listing_request(
+    op: u8,
+    key: &ed25519_dalek::SigningKey,
+    entry: listing::SignedEntry,
+) -> Request {
+    Request {
+        room: listing::room_id(&key.verifying_key().to_bytes()),
+        operation: [op; 16],
+        action: Action::Publish { entry },
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn listing_is_signed_by_the_room_key_live_only_and_never_shows_traffic() {
+    futures::executor::block_on(async {
+        let a = listing_assembly();
+        let key = listing_key(7);
+        let room = listing::room_id(&key.verifying_key().to_bytes());
+        let publish = |op: u8, entry| listing_request(op, &key, entry);
+        // No live room yet: a pass holder cannot list a room that is not there.
+        assert_eq!(
+            execute(&a, &publish(1, listing_entry(&key, 1, false))).await,
+            Err(Error::Refused)
+        );
+        let resume = Request {
+            room,
+            operation: [2; 16],
+            action: Action::Resume {
+                connection: [1; 16],
+            },
+        };
+        execute(&a, &resume).await.unwrap();
+        let outcome = execute(&a, &publish(3, listing_entry(&key, 1, false)))
+            .await
+            .unwrap();
+        assert_eq!(outcome.active_connections, 1);
+        let page = a.list(None, 10, 100).await.unwrap();
+        assert_eq!(
+            page.rooms,
+            vec![listing::Listed {
+                room,
+                name: "Chess".into(),
+                description: "Friendly games".into(),
+                here_now: 1,
+            }]
+        );
+        // The same entry may be refreshed; an older or conflicting one may not replace it.
+        execute(&a, &publish(4, listing_entry(&key, 1, false)))
+            .await
+            .unwrap();
+        let mut other = listing_entry(&key, 2, false);
+        other.entry.name = "Go".into();
+        let other = listing::SignedEntry::sign(other.entry, &key).unwrap();
+        execute(&a, &publish(5, other)).await.unwrap();
+        assert_eq!(a.list(None, 10, 100).await.unwrap().rooms[0].name, "Go");
+        assert_eq!(
+            execute(&a, &publish(6, listing_entry(&key, 1, false))).await,
+            Err(Error::Conflict)
+        );
+        // Another key cannot sign for this room; a forged signature is refused.
+        let intruder = listing_key(8);
+        assert_eq!(
+            execute(&a, &publish(7, listing_entry(&intruder, 9, false))).await,
+            Err(Error::Refused)
+        );
+        let mut forged = listing_entry(&key, 3, false);
+        forged.entry.name = "Other".into();
+        assert_eq!(execute(&a, &publish(8, forged)).await, Err(Error::Refused));
+        // Content bounds.
+        let mut long = listing_entry(&key, 3, false).entry;
+        long.name = "x".repeat(listing::NAME_BYTES + 1);
+        let long = listing::SignedEntry::sign(long, &key).unwrap();
+        assert_eq!(execute(&a, &publish(9, long)).await, Err(Error::Invalid));
+        let mut stale = listing_entry(&key, 3, false).entry;
+        stale.expires_ms = 100;
+        let stale = listing::SignedEntry::sign(stale, &key).unwrap();
+        assert_eq!(execute(&a, &publish(10, stale)).await, Err(Error::Invalid));
+        // A signed tombstone withdraws it and an older entry cannot revive it.
+        execute(&a, &publish(11, listing_entry(&key, 3, true)))
+            .await
+            .unwrap();
+        assert!(a.list(None, 10, 100).await.unwrap().rooms.is_empty());
+        assert_eq!(
+            execute(&a, &publish(12, listing_entry(&key, 2, false))).await,
+            Err(Error::Conflict)
+        );
+        execute(&a, &publish(13, listing_entry(&key, 4, false)))
+            .await
+            .unwrap();
+        assert_eq!(a.list(None, 10, 100).await.unwrap().rooms.len(), 1);
+        // The listing ends with the room's last connection.
+        let leave = Request {
+            room,
+            operation: [14; 16],
+            action: Action::Disconnect {
+                connection: [1; 16],
+            },
+        };
+        execute(&a, &leave).await.unwrap();
+        assert!(a.list(None, 10, 100).await.unwrap().rooms.is_empty());
+        assert_eq!(a.list(None, 0, 100).await.unwrap_err(), Error::Invalid);
+        assert!(a.with_listing_ttl(0).is_err());
+    });
+}

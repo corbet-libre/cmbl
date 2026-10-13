@@ -1,6 +1,11 @@
 //! Blind expiring room ordering. Proof construction remains an explicit gate.
 #![forbid(unsafe_code)]
 
+mod blind;
+pub mod listing;
+pub mod passes;
+pub mod settlement;
+
 use cmmr::{Deadline, Record, Revision, Store, Write};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -26,15 +31,61 @@ pub enum Error {
     Storage,
 }
 
+/// Bytes of an ephemeral X25519 HPKE public key.
+pub const JOIN_KEY_BYTES: usize = 32;
+/// Answers one join request may collect before further ones are refused.
+pub const JOIN_ANSWERS: usize = 4;
+
+/// What a relayed frame carries. cmbl reads none of it beyond its shape.
+///
+/// Joining is request and response, never a published state: a newcomer holding
+/// a valid room pass posts a `JoinRequest` (its ephemeral HPKE public key; the
+/// pass check on the Relay request is the spam defence) and any online member
+/// answers with a `RoomState` frame sealed to that key (GroupInfo, ratchet tree
+/// and parent evidence). The room sees the pass check and ciphertext only, and
+/// nothing is retained in the clear. With no member online the request simply
+/// expires unanswered and the newcomer retries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum FrameKind {
+    /// Member traffic.
+    Message,
+    /// `room_join_request`: the ciphertext is exactly [`JOIN_KEY_BYTES`] bytes,
+    /// the newcomer's ephemeral public key.
+    JoinRequest,
+    /// `room_state`: sealed answer to the live `JoinRequest` with relay
+    /// sequence `to`.
+    RoomState { to: u64 },
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Action {
-    Resume { connection: Id },
-    Connect { connection: Id },
-    Renew { connection: Id },
-    Disconnect { connection: Id },
-    Order { expected: u64, ciphertext: Vec<u8> },
-    Relay { ciphertext: Vec<u8> },
-    Read { after: u64 },
+    Resume {
+        connection: Id,
+    },
+    Connect {
+        connection: Id,
+    },
+    Renew {
+        connection: Id,
+    },
+    Disconnect {
+        connection: Id,
+    },
+    Order {
+        expected: u64,
+        ciphertext: Vec<u8>,
+    },
+    Relay {
+        ciphertext: Vec<u8>,
+        kind: FrameKind,
+    },
+    Read {
+        after: u64,
+    },
+    /// Publish, refresh, replace or withdraw this room's listing entry.
+    Publish {
+        entry: listing::SignedEntry,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -42,6 +93,28 @@ pub struct Request {
     pub room: Id,
     pub operation: Id,
     pub action: Action,
+}
+
+/// Verified portal role of the caller, decided by the host from the caller's
+/// current role gate. The room owner trusts only this verdict, never a claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortalRole {
+    /// Admin gate of exactly this community (the admin portal).
+    Admin { community: String },
+    /// Root gate (the root portal); every community's rooms.
+    Root,
+}
+pub trait PortalGate {
+    /// `None` when the caller holds neither gate in a verified, current way.
+    fn role(&self) -> Option<PortalRole>;
+}
+
+/// Aggregate volume of one room, never per member, never a history: it is the
+/// running total the ephemeral room already holds and disappears with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Traffic {
+    pub room: Id,
+    pub traffic_bytes: u64,
 }
 
 /// Only a reviewed proof adapter may create this capability. It is deliberately
@@ -53,6 +126,7 @@ pub struct Permit {
     community: String,
     request: [u8; 32],
     valid_until: u64,
+    connection: Id,
     resume_counter: Option<u64>,
 }
 
@@ -81,6 +155,7 @@ pub struct Limits {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Frame {
+    kind: FrameKind,
     sequence: u64,
     counter: u64,
     ciphertext: Vec<u8>,
@@ -89,6 +164,7 @@ struct Frame {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Room {
+    ordering: Id,
     sequence: u64,
     counter: u64,
     connections: BTreeMap<Id, u64>,
@@ -98,8 +174,9 @@ struct Room {
 }
 
 /// Opaque retained ciphertext. Sequence is independent of the MLS-order counter.
-#[derive(Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RelayFrame {
+    pub kind: FrameKind,
     pub sequence: u64,
     pub counter: u64,
     pub ciphertext: Vec<u8>,
@@ -109,11 +186,15 @@ impl std::fmt::Debug for RelayFrame {
         f.write_str("RelayFrame([redacted])")
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Outcome {
+    /// Fresh opaque transport generation. Counter values across generations are
+    /// incomparable; members must reconcile the authenticated MLS group state.
+    pub ordering: Id,
     pub counter: u64,
+    /// "Here now" indicator. Traffic volume is never part of what members
+    /// receive; see [`Assembly::traffic`].
     pub active_connections: usize,
-    pub traffic_bytes: u64,
     pub through: u64,
     pub gap: bool,
     pub frames: Vec<RelayFrame>,
@@ -125,15 +206,14 @@ struct OperationReceipt {
     expires: u64,
     counter: u64,
     connections: usize,
-    volume: u64,
     through: u64,
 }
 impl OperationReceipt {
-    fn outcome(&self) -> Outcome {
+    fn outcome(&self, ordering: Id) -> Outcome {
         Outcome {
+            ordering,
             counter: self.counter,
             active_connections: self.connections,
-            traffic_bytes: self.volume,
             through: self.through,
             gap: false,
             frames: vec![],
@@ -146,6 +226,7 @@ pub struct Assembly<S> {
     community: String,
     incarnation: String,
     limits: Limits,
+    listing_ttl_ms: u64,
 }
 
 impl<S: Store> Assembly<S> {
@@ -165,7 +246,17 @@ impl<S: Store> Assembly<S> {
             community,
             incarnation,
             limits,
+            listing_ttl_ms: listing::DEFAULT_TTL_MS,
         })
+    }
+
+    /// How long a published entry stays listed without a refresh.
+    pub fn with_listing_ttl(mut self, milliseconds: u64) -> Result<Self> {
+        if milliseconds == 0 {
+            return Err(Error::Invalid);
+        }
+        self.listing_ttl_ms = milliseconds;
+        Ok(self)
     }
 
     pub async fn execute(
@@ -187,7 +278,42 @@ impl<S: Store> Assembly<S> {
         {
             return Err(Error::Refused);
         }
+        if let Action::Publish { entry } = &request.action {
+            return self.publish(request, &permit, entry, now).await;
+        }
         self.apply(request, permit, now).await
+    }
+
+    /// Room traffic for the admin portal (own community) or root portal. This is
+    /// the only route that reveals `traffic_bytes`; members get `Outcome`, which
+    /// has no such field. An absent or expired room has no total.
+    pub async fn traffic(
+        &self,
+        room: &Id,
+        gate: &dyn PortalGate,
+        now: u64,
+    ) -> Result<Option<Traffic>> {
+        match gate.role() {
+            Some(PortalRole::Root) => {}
+            Some(PortalRole::Admin { community }) if community == self.community => {}
+            _ => return Err(Error::Refused),
+        }
+        let Some(record) = self
+            .store
+            .get(&hex(room))
+            .await
+            .map_err(|_| Error::Storage)?
+        else {
+            return Ok(None);
+        };
+        let room_state: Room = postcard::from_bytes(&record.value).map_err(|_| Error::Storage)?;
+        if room_state.connections.values().all(|until| *until <= now) {
+            return Ok(None);
+        }
+        Ok(Some(Traffic {
+            room: *room,
+            traffic_bytes: room_state.volume,
+        }))
     }
 
     async fn apply(&self, request: &Request, permit: Permit, now: u64) -> Result<Outcome> {
@@ -218,7 +344,7 @@ impl<S: Store> Assembly<S> {
                 room.receipts.retain(|_, receipt| receipt.expires > now);
                 if let Some(receipt) = room.receipts.get(&request.operation) {
                     return if receipt.fingerprint == fingerprint {
-                        Ok(receipt.outcome())
+                        Ok(receipt.outcome(room.ordering))
                     } else {
                         Err(Error::Conflict)
                     };
@@ -233,7 +359,10 @@ impl<S: Store> Assembly<S> {
                     return Err(Error::ResumeRequired);
                 };
                 let counter = permit.resume_counter.ok_or(Error::Refused)?;
+                let mut ordering = [0; 16];
+                getrandom::fill(&mut ordering).map_err(|_| Error::Storage)?;
                 Room {
+                    ordering,
                     sequence: 0,
                     counter,
                     connections: BTreeMap::from([(connection, deadline)]),
@@ -243,6 +372,13 @@ impl<S: Store> Assembly<S> {
                 }
             }
         };
+        if matches!(
+            request.action,
+            Action::Order { .. } | Action::Relay { .. } | Action::Read { .. }
+        ) && !room.connections.contains_key(&permit.connection)
+        {
+            return Err(Error::Refused);
+        }
         if !matches!(request.action, Action::Read { .. })
             && room.receipts.len() >= self.limits.operation_receipts
         {
@@ -264,6 +400,7 @@ impl<S: Store> Assembly<S> {
                     .iter()
                     .filter(|f| f.sequence > *after)
                     .map(|f| RelayFrame {
+                        kind: f.kind,
                         sequence: f.sequence,
                         counter: f.counter,
                         ciphertext: f.ciphertext.clone(),
@@ -272,6 +409,8 @@ impl<S: Store> Assembly<S> {
                 return Ok(result);
             }
             Action::Resume { .. } => {}
+            // Listing entries are handled before the room state machine.
+            Action::Publish { .. } => return Err(Error::Invalid),
             Action::Connect { connection } => {
                 if room.connections.contains_key(connection) {
                     return Err(Error::Conflict);
@@ -310,10 +449,32 @@ impl<S: Store> Assembly<S> {
                     return Err(Error::Conflict);
                 }
                 room.counter = room.counter.checked_add(1).ok_or(Error::Capacity)?;
-                self.append(&mut room, ciphertext, deadline)?;
+                self.append(&mut room, ciphertext, FrameKind::Message, deadline)?;
             }
-            Action::Relay { ciphertext } => {
-                self.append(&mut room, ciphertext, deadline)?;
+            Action::Relay { ciphertext, kind } => {
+                match kind {
+                    FrameKind::Message => {}
+                    FrameKind::JoinRequest => {
+                        if ciphertext.len() != JOIN_KEY_BYTES {
+                            return Err(Error::Invalid);
+                        }
+                    }
+                    FrameKind::RoomState { to } => {
+                        // Only a live request can be answered, a bounded number of times.
+                        if !room
+                            .frames
+                            .iter()
+                            .any(|f| f.sequence == *to && f.kind == FrameKind::JoinRequest)
+                        {
+                            return Err(Error::Invalid);
+                        }
+                        let answers = room.frames.iter().filter(|f| f.kind == *kind).count();
+                        if answers >= JOIN_ANSWERS {
+                            return Err(Error::Capacity);
+                        }
+                    }
+                }
+                self.append(&mut room, ciphertext, *kind, deadline)?;
             }
         }
         let result = outcome(&room);
@@ -324,7 +485,6 @@ impl<S: Store> Assembly<S> {
                 expires: permit.valid_until,
                 counter: result.counter,
                 connections: result.active_connections,
-                volume: result.traffic_bytes,
                 through: result.through,
             },
         );
@@ -359,7 +519,13 @@ impl<S: Store> Assembly<S> {
         Ok(outcome(&room))
     }
 
-    fn append(&self, room: &mut Room, ciphertext: &[u8], expires: u64) -> Result<()> {
+    fn append(
+        &self,
+        room: &mut Room,
+        ciphertext: &[u8],
+        kind: FrameKind,
+        expires: u64,
+    ) -> Result<()> {
         if ciphertext.is_empty() || ciphertext.len() > self.limits.message_bytes {
             return Err(Error::Invalid);
         }
@@ -372,6 +538,7 @@ impl<S: Store> Assembly<S> {
             .ok_or(Error::Capacity)?;
         room.sequence = room.sequence.checked_add(1).ok_or(Error::Capacity)?;
         room.frames.push(Frame {
+            kind,
             sequence: room.sequence,
             counter: room.counter,
             ciphertext: ciphertext.to_vec(),
@@ -396,9 +563,9 @@ fn hex(value: &Id) -> String {
 }
 fn outcome(room: &Room) -> Outcome {
     Outcome {
+        ordering: room.ordering,
         counter: room.counter,
         active_connections: room.connections.len(),
-        traffic_bytes: room.volume,
         through: room.sequence,
         gap: false,
         frames: vec![],
