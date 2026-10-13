@@ -308,7 +308,7 @@ checksum = "8fd9f3db6f2cfef61c10613071955154ffdc9e515daebff26de4b54e35038fdd"
 [[package]]
 name = "cthl"
 version = "0.0.0"
-source = "git+https://git.corbet.ch/corbet-foss/cthl?branch=main#b58391692fa5e6de78934a9c5f41bfc4424d41bb"
+source = "git+https://git.corbet.ch/corbet-foss/cthl?branch=main#de0f4feac0a4d0dc54f89732aa80a45b8bb37e5b"
 dependencies = [
  "governor",
 ]
