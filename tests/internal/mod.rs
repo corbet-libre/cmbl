@@ -91,6 +91,54 @@ async fn execute<S: Store>(a: &Assembly<S>, r: &Request) -> Result<Outcome> {
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
+fn room_state_keeps_only_the_latest_frame_of_its_kind() {
+    futures::executor::block_on(async {
+        let (a, _) = setup();
+        execute(
+            &a,
+            &request(
+                1,
+                Action::Resume {
+                    connection: [1; 16],
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        let relay = |n, byte, kind| {
+            request(
+                n,
+                Action::Relay {
+                    ciphertext: vec![byte; 4],
+                    kind,
+                },
+            )
+        };
+        execute(&a, &relay(2, 1, FrameKind::RoomState))
+            .await
+            .unwrap();
+        execute(&a, &relay(3, 2, FrameKind::Message)).await.unwrap();
+        execute(&a, &relay(4, 3, FrameKind::RoomState))
+            .await
+            .unwrap();
+        let read = execute(&a, &request(5, Action::Read { after: 0 }))
+            .await
+            .unwrap();
+        let kinds: Vec<_> = read
+            .frames
+            .iter()
+            .map(|f| (f.kind, f.ciphertext[0]))
+            .collect();
+        // The old state is gone, the message stays, the latest state is kept.
+        assert_eq!(
+            kinds,
+            vec![(FrameKind::Message, 2), (FrameKind::RoomState, 3)]
+        );
+    });
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn real_memory_order_replay_expiry_and_restart() {
     futures::executor::block_on(async {
         let (a, time) = setup();
@@ -143,7 +191,8 @@ fn real_memory_order_replay_expiry_and_restart() {
                 &request(
                     2,
                     Action::Relay {
-                        ciphertext: vec![4]
+                        ciphertext: vec![4],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -275,7 +324,17 @@ fn connections_and_bounded_relay() {
         );
         for bytes in [vec![], vec![0; 101]] {
             assert_eq!(
-                execute(&a, &request(4, Action::Relay { ciphertext: bytes })).await,
+                execute(
+                    &a,
+                    &request(
+                        4,
+                        Action::Relay {
+                            ciphertext: bytes,
+                            kind: FrameKind::Message
+                        }
+                    )
+                )
+                .await,
                 Err(Error::Invalid)
             );
         }
@@ -286,6 +345,7 @@ fn connections_and_bounded_relay() {
                     op,
                     Action::Relay {
                         ciphertext: vec![op],
+                        kind: FrameKind::Message,
                     },
                 ),
             )
@@ -298,7 +358,8 @@ fn connections_and_bounded_relay() {
                 &request(
                     6,
                     Action::Relay {
-                        ciphertext: vec![9]
+                        ciphertext: vec![9],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -449,7 +510,8 @@ fn real_storage_refuses_corruption_and_impossible_deadline() {
                 &request(
                     2,
                     Action::Relay {
-                        ciphertext: vec![1]
+                        ciphertext: vec![1],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -550,6 +612,7 @@ fn real_cas_and_generation_races_do_not_remove_a_new_room() {
             let action = if race == 1 {
                 Action::Relay {
                     ciphertext: vec![3],
+                    kind: FrameKind::Message,
                 }
             } else {
                 Action::Disconnect {
@@ -602,6 +665,7 @@ fn room_scoped_generations_and_frame_expiry() {
                 2,
                 Action::Relay {
                     ciphertext: vec![1],
+                    kind: FrameKind::Message,
                 },
             ),
         )
@@ -685,6 +749,7 @@ fn bounded_reads_report_expiry_gaps_without_attendance_identity() {
                 2,
                 Action::Relay {
                     ciphertext: vec![8],
+                    kind: FrameKind::Message,
                 },
             ),
         )
@@ -757,6 +822,7 @@ fn bounded_reads_report_expiry_gaps_without_attendance_identity() {
                 5,
                 Action::Relay {
                     ciphertext: vec![11],
+                    kind: FrameKind::Message,
                 },
             ),
             &[],
@@ -795,6 +861,7 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
             2,
             Action::Relay {
                 ciphertext: vec![3],
+                kind: FrameKind::Message,
             },
         );
         let first = execute(&a, &relay).await.unwrap();
@@ -816,7 +883,8 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
                 &request(
                     2,
                     Action::Relay {
-                        ciphertext: vec![4]
+                        ciphertext: vec![4],
+                        kind: FrameKind::Message,
                     }
                 )
             )
@@ -829,6 +897,7 @@ fn nonadjacent_replay_is_bounded_and_connection_loss_forgets_room() {
                 4,
                 Action::Relay {
                     ciphertext: vec![5],
+                    kind: FrameKind::Message,
                 },
             ),
             &[],

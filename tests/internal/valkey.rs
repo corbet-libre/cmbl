@@ -86,6 +86,7 @@ async fn parity<S: Store>(a: Assembly<S>) {
         2,
         Action::Relay {
             ciphertext: vec![7],
+            kind: FrameKind::Message,
         },
     );
     let original = a.execute(&relay, &[], &proofs, now()).await.unwrap();
@@ -111,7 +112,8 @@ async fn parity<S: Store>(a: Assembly<S>) {
             &request(
                 2,
                 Action::Relay {
-                    ciphertext: vec![8]
+                    ciphertext: vec![8],
+                    kind: FrameKind::Message
                 }
             ),
             &[],
@@ -128,6 +130,7 @@ async fn parity<S: Store>(a: Assembly<S>) {
             4,
             Action::Relay {
                 ciphertext: vec![9],
+                kind: FrameKind::Message,
             },
         ),
         &[],

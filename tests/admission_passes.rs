@@ -171,6 +171,7 @@ fn actual_blind_pass_binds_room_connection_request_epoch_and_restart() {
             operation: [5; 16],
             action: Action::Relay {
                 ciphertext: vec![4],
+                kind: cmbl::FrameKind::Message,
             },
         };
         assert_eq!(

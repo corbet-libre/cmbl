@@ -31,6 +31,20 @@ pub enum Error {
     Storage,
 }
 
+/// What a relayed frame carries. cmbl never reads the bytes; the kind only
+/// decides retention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum FrameKind {
+    /// Member traffic: retained in order until it expires.
+    Message,
+    /// `room_state`: the MLS GroupInfo and parent evidence the member that
+    /// committed an epoch publishes for newcomers. Only the latest one is kept
+    /// (a new one replaces the old), and it is read like any frame with a valid
+    /// room pass. A pass holder can at worst replace it with bytes a joiner then
+    /// fails to verify; the GroupInfo carries its own member signature.
+    RoomState,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Action {
     Resume {
@@ -51,6 +65,7 @@ pub enum Action {
     },
     Relay {
         ciphertext: Vec<u8>,
+        kind: FrameKind,
     },
     Read {
         after: u64,
@@ -128,6 +143,7 @@ pub struct Limits {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Frame {
+    kind: FrameKind,
     sequence: u64,
     counter: u64,
     ciphertext: Vec<u8>,
@@ -148,6 +164,7 @@ struct Room {
 /// Opaque retained ciphertext. Sequence is independent of the MLS-order counter.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RelayFrame {
+    pub kind: FrameKind,
     pub sequence: u64,
     pub counter: u64,
     pub ciphertext: Vec<u8>,
@@ -371,6 +388,7 @@ impl<S: Store> Assembly<S> {
                     .iter()
                     .filter(|f| f.sequence > *after)
                     .map(|f| RelayFrame {
+                        kind: f.kind,
                         sequence: f.sequence,
                         counter: f.counter,
                         ciphertext: f.ciphertext.clone(),
@@ -419,10 +437,16 @@ impl<S: Store> Assembly<S> {
                     return Err(Error::Conflict);
                 }
                 room.counter = room.counter.checked_add(1).ok_or(Error::Capacity)?;
-                self.append(&mut room, ciphertext, deadline)?;
+                self.append(&mut room, ciphertext, FrameKind::Message, deadline)?;
             }
-            Action::Relay { ciphertext } => {
-                self.append(&mut room, ciphertext, deadline)?;
+            Action::Relay { ciphertext, kind } => {
+                if *kind == FrameKind::RoomState {
+                    // Only the latest state is retained; the old one goes first so a
+                    // full relay still accepts it.
+                    room.frames
+                        .retain(|frame| frame.kind != FrameKind::RoomState);
+                }
+                self.append(&mut room, ciphertext, *kind, deadline)?;
             }
         }
         let result = outcome(&room);
@@ -467,7 +491,13 @@ impl<S: Store> Assembly<S> {
         Ok(outcome(&room))
     }
 
-    fn append(&self, room: &mut Room, ciphertext: &[u8], expires: u64) -> Result<()> {
+    fn append(
+        &self,
+        room: &mut Room,
+        ciphertext: &[u8],
+        kind: FrameKind,
+        expires: u64,
+    ) -> Result<()> {
         if ciphertext.is_empty() || ciphertext.len() > self.limits.message_bytes {
             return Err(Error::Invalid);
         }
@@ -480,6 +510,7 @@ impl<S: Store> Assembly<S> {
             .ok_or(Error::Capacity)?;
         room.sequence = room.sequence.checked_add(1).ok_or(Error::Capacity)?;
         room.frames.push(Frame {
+            kind,
             sequence: room.sequence,
             counter: room.counter,
             ciphertext: ciphertext.to_vec(),
