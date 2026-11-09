@@ -60,7 +60,7 @@ def runner(metadata_value):
     directory = root / 'wasm-runner'
     directory.mkdir()
     name = f'wasm-bindgen-{version}-x86_64-unknown-linux-musl.tar.gz'
-    base = f'https://github.com/wasm-bindgen/wasm-bindgen/releases/download/{version}'
+    base = f"{os.environ.get('WASM_BINDGEN_DOWNLOAD_BASE', 'https://github.com/wasm-bindgen/wasm-bindgen/releases/download')}/{version}"
     for suffix in ['', '.sha256sum']:
         run(['curl', '--fail', '--location', '--retry', '3', '--output',
              str(directory / (name + suffix)), base + '/' + name + suffix])
