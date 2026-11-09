@@ -31,7 +31,7 @@ valkey-conformance = ["dep:cvlk", "dep:redis", "dep:tokio"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 openssl = { version = "0.10", optional = true }
-cvlk = { git = "https://git.corbet.ch/corbet-foss/cvlk.git", branch = "main", optional = true }
+cvlk = { git = "https://git.corbet.ch/corbet-libre/cvlk.git", branch = "main", optional = true }
 redis = { version = "1", default-features = false, features = ["tokio-comp"], optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"], optional = true }
 
