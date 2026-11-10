@@ -179,7 +179,7 @@ dependencies = [
 [[package]]
 name = "cmmr"
 version = "0.1.0"
-source = "git+https://git.corbet.ch/corbet-libre/cmmr.git?branch=main#8aa0f7d01e6775914446dbb7e146deb638d65ac3"
+source = "git+https://git.corbet.ch/corbet-libre/cmmr.git?branch=main#166ef88d5f49d71f3e00abc31e30ba2b1e9a4f46"
 dependencies = [
  "serde",
 ]
